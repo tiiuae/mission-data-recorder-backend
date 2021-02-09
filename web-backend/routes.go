@@ -10,6 +10,7 @@ import (
 
 func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodGet, "/subscribe", subscribeWebsocket)
+	router.HandlerFunc(http.MethodGet, "/drones", getDrones)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

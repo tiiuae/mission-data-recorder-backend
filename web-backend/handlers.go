@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"sync"
@@ -20,6 +21,41 @@ var (
 	subscribersMu sync.Mutex
 	subscribers   map[*subscriber]struct{} = make(map[*subscriber]struct{})
 )
+
+func getDrones(w http.ResponseWriter, r *http.Request) {
+	// call gzserver to get simulation drones
+	resp, err := http.Get("http://gzserver-api-svc:8081/simulation/drones")
+	if err != nil {
+		log.Printf("Could not get list of drones: %v\n", err)
+		http.Error(w, "Unable to list drones", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := ioutil.ReadAll(resp.Body)
+		log.Printf("List drones returned error (%d): %v", resp.StatusCode, string(msg))
+		http.Error(w, "Unable to list drones", http.StatusInternalServerError)
+		return
+	}
+
+	var gzserverResponse []struct {
+		DeviceID      string `json:"device_id"`
+		DroneLocation string `json:"drone_location"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&gzserverResponse)
+	if err != nil {
+		log.Printf("Response was not formatted correctly: %v\n", err)
+		http.Error(w, "Unable to list drones", http.StatusInternalServerError)
+		return
+	}
+
+	var response []string
+	for _, drone := range gzserverResponse {
+		response = append(response, drone.DeviceID)
+	}
+	writeJSON(w, response)
+}
 
 func subscribeWebsocket(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
