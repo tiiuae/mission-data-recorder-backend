@@ -28,16 +28,35 @@ func main() {
 	defer mqttClient.Disconnect(1000)
 	router := httprouter.New()
 	registerRoutes(router)
+	router.GlobalOPTIONS = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Access-Control-Request-Method") != "" {
+			// Set CORS headers
+			w.Header().Set("Access-Control-Allow-Origin", "http://localhost:8080")
+			w.Header().Set("Access-Control-Allow-Methods", w.Header().Get("Allow"))
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "3600")
+		}
+
+		// Adjust status code to 204
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	listenMQTTEvents(mqttClient)
 
 	log.Printf("Listening on port %s", port)
-	err := http.ListenAndServe(":"+port, router)
+	err := http.ListenAndServe(":"+port, setCORSHeader("http://localhost:8080", router))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	return
+}
+
+func setCORSHeader(origin string, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		handler.ServeHTTP(w, r)
+	})
 }
 
 func listenMQTTEvents(client mqtt.Client) {
