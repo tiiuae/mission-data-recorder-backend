@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
+	"google.golang.org/api/cloudiot/v1"
 	"nhooyr.io/websocket"
 )
 
@@ -22,20 +24,18 @@ var (
 	subscribers   map[*subscriber]struct{} = make(map[*subscriber]struct{})
 )
 
-func getDrones(w http.ResponseWriter, r *http.Request) {
+func getDronesMinikube(w http.ResponseWriter, r *http.Request) {
 	// call gzserver to get simulation drones
 	resp, err := http.Get("http://gzserver-api-svc:8081/simulation/drones")
 	if err != nil {
-		log.Printf("Could not get list of drones: %v\n", err)
-		http.Error(w, "Unable to list drones", http.StatusInternalServerError)
+		writeError(w, "Unable to list drones", err, http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := ioutil.ReadAll(resp.Body)
-		log.Printf("List drones returned error (%d): %v", resp.StatusCode, string(msg))
-		http.Error(w, "Unable to list drones", http.StatusInternalServerError)
+		writeError(w, fmt.Sprintf("Unable to list drones: (%d): %v", resp.StatusCode, string(msg)), nil, http.StatusInternalServerError)
 		return
 	}
 
@@ -45,14 +45,36 @@ func getDrones(w http.ResponseWriter, r *http.Request) {
 	}
 	err = json.NewDecoder(resp.Body).Decode(&gzserverResponse)
 	if err != nil {
-		log.Printf("Response was not formatted correctly: %v\n", err)
-		http.Error(w, "Unable to list drones", http.StatusInternalServerError)
+		writeError(w, "Response was not formatted correctly", err, http.StatusInternalServerError)
 		return
 	}
 
 	var response []string
 	for _, drone := range gzserverResponse {
 		response = append(response, drone.DeviceID)
+	}
+	writeJSON(w, response)
+}
+
+func getDronesCloud(w http.ResponseWriter, r *http.Request) {
+	client, err := cloudiot.NewService(r.Context())
+	if err != nil {
+		writeError(w, "Could not create IoT client", err, http.StatusInternalServerError)
+		return
+	}
+
+	parent := fmt.Sprintf("projects/%s/locations/%s/registries/%s", "auto-fleet-mgnt", "europe-west1", "fleet-registry")
+	call := client.Projects.Locations.Registries.Devices.List(parent)
+	call.FieldMask("lastHeartbeatTime,lastEventTime,lastStateTime,metadata")
+	devices, err := call.Do()
+	if err != nil {
+		writeError(w, "Unable to list drones", err, http.StatusInternalServerError)
+		return
+	}
+
+	var response []string
+	for _, drone := range devices.Devices {
+		response = append(response, drone.Id)
 	}
 	writeJSON(w, response)
 }
@@ -127,6 +149,14 @@ func publishMessage(message []byte) {
 			// buffer for this subscriber is full
 			s.closeConnection()
 		}
+	}
+}
+
+func handleMQTTEvent(deviceID string, topic string, payload []byte) {
+	log.Printf("Event: %s %s\n", deviceID, topic)
+	switch topic {
+	case "location":
+		go handleLocationEvent(context.Background(), deviceID, payload)
 	}
 }
 

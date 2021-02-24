@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -10,7 +11,14 @@ import (
 
 func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodGet, "/subscribe", subscribeWebsocket)
-	router.HandlerFunc(http.MethodGet, "/drones", getDrones)
+}
+
+func registerMinikubeRoutes(router *httprouter.Router) {
+	router.HandlerFunc(http.MethodGet, "/drones", getDronesMinikube)
+}
+
+func registerCloudRoutes(router *httprouter.Router) {
+	router.HandlerFunc(http.MethodGet, "/drones", getDronesCloud)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
@@ -23,4 +31,10 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
+}
+
+func writeError(w http.ResponseWriter, message string, err error, code int) {
+	text := fmt.Sprintf("%s: %v", message, err)
+	log.Println(text)
+	http.Error(w, text, code)
 }
