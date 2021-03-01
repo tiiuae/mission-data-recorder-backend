@@ -11,6 +11,7 @@ import (
 
 func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodGet, "/subscribe", subscribeWebsocket)
+	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
 }
 
 func registerMinikubeRoutes(router *httprouter.Router) {
@@ -37,4 +38,8 @@ func writeError(w http.ResponseWriter, message string, err error, code int) {
 	text := fmt.Sprintf("%s: %v", message, err)
 	log.Println(text)
 	http.Error(w, text, code)
+}
+
+func healthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
 }
