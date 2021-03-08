@@ -14,6 +14,36 @@ import (
 	"nhooyr.io/websocket"
 )
 
+var armingStateMap = map[uint8]string{
+	0: "Init",
+	1: "Standby",
+	2: "Armed",
+	3: "Standby error",
+	4: "Shutdown",
+	5: "In air restore",
+}
+var navigationModeMap = map[uint8]string{
+	0:  "Manual mode",
+	1:  "Altitude control mode",
+	2:  "Position control mode",
+	3:  "Auto mission mode",
+	4:  "Auto loiter mode",
+	5:  "Auto return to launch mode",
+	8:  "Auto land on engine failure",
+	9:  "Auto land on gps failure",
+	10: "Acro mode",
+	12: "Descend mode",
+	13: "Termination mode",
+	14: "Offboard mode",
+	15: "Stabilized mode",
+	16: "Rattitude (aka \"flip\") mode",
+	17: "Takeoff mode",
+	18: "Land mode",
+	19: "Follow mode",
+	20: "Precision land with landing target",
+	21: "Orbit mode",
+}
+
 type subscriber struct {
 	messages        chan []byte
 	closeConnection func()
@@ -155,33 +185,24 @@ func publishMessage(message []byte) {
 func handleMQTTEvent(deviceID string, topic string, payload []byte) {
 	log.Printf("Event: %s %s\n", deviceID, topic)
 	switch topic {
-	case "location":
-		go handleLocationEvent(context.Background(), deviceID, payload)
+	case "telemetry":
+		go handleTelemetryEvent(context.Background(), deviceID, payload)
 	}
 }
 
-// handle location event from drone
-// drone has initialized its ssh keys and is ready to be joined
-func handleLocationEvent(c context.Context, deviceID string, payload []byte) {
+func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 	var telemetry struct {
-		GpsData struct {
-			//Timestamp          uint64
-			//Timestamp_sample   uint64
-			Lat          float64
-			Lon          float64
-			Alt          float32
-			AltEllipsoid float32
-			DeltaAlt     float32
-			//LatLonResetCounter uint8
-			//AltResetCounter    uint8
-			Eph             float32
-			Epv             float32
-			TerrainAlt      float32
-			TerrainAltValid bool
-			DeadReckoning   bool
-		}
-		//DeviceId  string
-		//MessageID string
+		Timestamp        int64
+		MessageID        string
+		Lat              float64
+		Lon              float64
+		Heading          float32
+		BatteryVoltageV  float32
+		BatteryRemaining float32
+		AltitudeFromHome float32
+		DistanceFromHome float32
+		ArmingState      uint8
+		NavState         uint8
 	}
 	err := json.Unmarshal(payload, &telemetry)
 	if err != nil {
@@ -191,14 +212,37 @@ func handleLocationEvent(c context.Context, deviceID string, payload []byte) {
 
 	//log.Printf("GPS %s (%.8f %.8f)", deviceID, telemetry.GpsData.Lat, telemetry.GpsData.Lon)
 
+	armingState, ok := armingStateMap[telemetry.ArmingState]
+	if !ok {
+		armingState = "UNKNOWN STATE"
+	}
+	navMode, ok := navigationModeMap[telemetry.NavState]
+	if !ok {
+		navMode = "UNKNOWN MODE"
+	}
+
 	msg, _ := json.Marshal(struct {
-		Device string  `json:"device"`
-		Lat    float64 `json:"lat"`
-		Lon    float64 `json:"lon"`
+		Device           string  `json:"device"`
+		Lat              float64 `json:"lat"`
+		Lon              float64 `json:"lon"`
+		Heading          float32 `json:"heading"`
+		BatteryVoltage   float32 `json:"battery_voltage"`
+		BatteryRemaining float32 `json:"battery_remaining"`
+		AltitudeFromHome float32 `json:"altitude_from_home"`
+		DistanceFromHome float32 `json:"distance_from_home"`
+		ArmingState      string  `json:"arming_state"`
+		NavigationMode   string  `json:"navigation_mode"`
 	}{
-		Device: deviceID,
-		Lat:    telemetry.GpsData.Lat,
-		Lon:    telemetry.GpsData.Lon,
+		Device:           deviceID,
+		Lat:              telemetry.Lat,
+		Lon:              telemetry.Lon,
+		Heading:          telemetry.Heading,
+		BatteryVoltage:   telemetry.BatteryVoltageV,
+		BatteryRemaining: telemetry.BatteryRemaining,
+		AltitudeFromHome: telemetry.AltitudeFromHome,
+		DistanceFromHome: telemetry.DistanceFromHome,
+		ArmingState:      armingState,
+		NavigationMode:   navMode,
 	})
 	// send updates to all listeners
 	go publishMessage(msg)
