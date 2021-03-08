@@ -192,17 +192,23 @@ func handleMQTTEvent(deviceID string, topic string, payload []byte) {
 
 func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 	var telemetry struct {
-		Timestamp        int64
-		MessageID        string
+		Timestamp int64
+		MessageID string
+
+		LocationUpdated  bool
 		Lat              float64
 		Lon              float64
 		Heading          float32
-		BatteryVoltageV  float32
-		BatteryRemaining float32
 		AltitudeFromHome float32
 		DistanceFromHome float32
-		ArmingState      uint8
-		NavState         uint8
+
+		BatteryUpdated   bool
+		BatteryVoltageV  float32
+		BatteryRemaining float32
+
+		StateUpdated bool
+		ArmingState  uint8
+		NavState     uint8
 	}
 	err := json.Unmarshal(payload, &telemetry)
 	if err != nil {
@@ -223,26 +229,36 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 
 	msg, _ := json.Marshal(struct {
 		Device           string  `json:"device"`
+		LocationUpdated  bool    `json:"location_updated"`
 		Lat              float64 `json:"lat"`
 		Lon              float64 `json:"lon"`
 		Heading          float32 `json:"heading"`
-		BatteryVoltage   float32 `json:"battery_voltage"`
-		BatteryRemaining float32 `json:"battery_remaining"`
 		AltitudeFromHome float32 `json:"altitude_from_home"`
 		DistanceFromHome float32 `json:"distance_from_home"`
-		ArmingState      string  `json:"arming_state"`
-		NavigationMode   string  `json:"navigation_mode"`
+
+		BatteryUpdated   bool    `json:"battery_updated"`
+		BatteryVoltage   float32 `json:"battery_voltage"`
+		BatteryRemaining float32 `json:"battery_remaining"`
+
+		StateUpdated   bool   `json:"state_updated"`
+		ArmingState    string `json:"arming_state"`
+		NavigationMode string `json:"navigation_mode"`
 	}{
 		Device:           deviceID,
+		LocationUpdated:  telemetry.LocationUpdated,
 		Lat:              telemetry.Lat,
 		Lon:              telemetry.Lon,
 		Heading:          telemetry.Heading,
-		BatteryVoltage:   telemetry.BatteryVoltageV,
-		BatteryRemaining: telemetry.BatteryRemaining,
 		AltitudeFromHome: telemetry.AltitudeFromHome,
 		DistanceFromHome: telemetry.DistanceFromHome,
-		ArmingState:      armingState,
-		NavigationMode:   navMode,
+
+		BatteryUpdated:   telemetry.BatteryUpdated,
+		BatteryVoltage:   telemetry.BatteryVoltageV,
+		BatteryRemaining: telemetry.BatteryRemaining,
+
+		StateUpdated:   telemetry.StateUpdated,
+		ArmingState:    armingState,
+		NavigationMode: navMode,
 	})
 	// send updates to all listeners
 	go publishMessage(msg)
