@@ -23,7 +23,7 @@ func main() {
 	if mqttBrokerAddress == "cloud-pull" {
 		log.Println("MQTT: IoT Core pull")
 		// go pullIoTCoreMessages("telemetry-web-backend-pull-sub")
-		go pullIoTCoreMessages("iot-device-location-web-backend-pull-sub")
+		go pullIoTCoreMessages("iot-device-telemetry-web-backend-pull-sub")
 	} else if mqttBrokerAddress == "cloud-push" {
 		log.Println("MQTT: IoT Core push")
 	} else {
