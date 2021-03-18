@@ -11,6 +11,7 @@ import (
 
 func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodGet, "/subscribe", subscribeWebsocket)
+	router.HandlerFunc(http.MethodPost, "/drones/:droneID/debug/start-mission", debugStartMission)
 	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
 }
 

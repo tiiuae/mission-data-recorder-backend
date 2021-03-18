@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/julienschmidt/httprouter"
 	"google.golang.org/api/cloudiot/v1"
 	"nhooyr.io/websocket"
 )
@@ -107,6 +108,33 @@ func getDronesCloud(w http.ResponseWriter, r *http.Request) {
 		response = append(response, drone.Id)
 	}
 	writeJSON(w, response)
+}
+
+func debugStartMission(w http.ResponseWriter, r *http.Request) {
+	c := r.Context()
+	params := httprouter.ParamsFromContext(c)
+	droneID := params.ByName("droneID")
+
+	msg, err := json.Marshal(struct {
+		Command string
+		Payload string
+	}{
+		Command: "start_mission",
+		Payload: "",
+	})
+
+	if err != nil {
+		log.Printf("Could not marshal join-mission command: %v\n", err)
+		return
+	}
+
+	log.Printf("Sending start_mission command to %s", droneID)
+
+	err = mqttPub.SendCommand(droneID, "control", msg)
+	if err != nil {
+		log.Printf("Could not publish message to MQTT broker: %v", err)
+		return
+	}
 }
 
 func subscribeWebsocket(w http.ResponseWriter, r *http.Request) {

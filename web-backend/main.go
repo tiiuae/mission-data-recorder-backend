@@ -12,6 +12,7 @@ import (
 )
 
 var mqttClient mqtt.Client
+var mqttPub MqttPublisher
 
 func main() {
 	if len(os.Args) != 2 {
@@ -22,15 +23,18 @@ func main() {
 	mqttBrokerAddress := os.Args[1]
 	if mqttBrokerAddress == "cloud-pull" {
 		log.Println("MQTT: IoT Core pull")
+		mqttPub = NewIoTPublisher()
 		// go pullIoTCoreMessages("telemetry-web-backend-pull-sub")
 		go pullIoTCoreMessages("iot-device-telemetry-web-backend-pull-sub")
 	} else if mqttBrokerAddress == "cloud-push" {
 		log.Println("MQTT: IoT Core push")
+		mqttPub = NewIoTPublisher()
 	} else {
 		log.Printf("MQTT: emulator @ %s", mqttBrokerAddress)
 		mqttClient := newMQTTClient("web-backend", mqttBrokerAddress)
 		defer mqttClient.Disconnect(1000)
 		listenMQTTEvents(mqttClient)
+		mqttPub = NewMqttPublisher(mqttClient)
 	}
 
 	router := httprouter.New()
