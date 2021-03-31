@@ -1,33 +1,34 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/gorilla/mux"
+	"google.golang.org/api/cloudiot/v1"
 	"gopkg.in/yaml.v3"
 )
 
 type urlGenerator struct {
 	Bucket        string
 	Account       string
-	PrivateKey    []byte
+	SigningKey    []byte
 	ValidDuration time.Duration
 }
 
 func (g *urlGenerator) Generate(object, method string) (string, error) {
 	url, err := storage.SignedURL(g.Bucket, object, &storage.SignedURLOptions{
 		GoogleAccessID: g.Account,
-		PrivateKey:     g.PrivateKey,
+		PrivateKey:     g.SigningKey,
 		Method:         method,
-		Expires:        time.Now().Add(g.ValidDuration),
+		Expires:        timeNow().Add(g.ValidDuration),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed URL: %w", err)
@@ -40,114 +41,103 @@ func configErr(err error) error {
 }
 
 type configuration struct {
-	Bucket           string              `yaml:"bucket"`
-	Account          string              `yaml:"account"`
-	PrivateKeyFile   string              `yaml:"privateKeyFile"`
-	PrivateKey       []byte              `yaml:"-"`
-	URLValidDuration time.Duration       `yaml:"urlValidDuration"`
-	Port             int                 `yaml:"port"`
-	APIKeys          []string            `yaml:"apiKeys"`
-	APIKeySet        map[string]struct{} `yaml:"-"`
-	FilePrefix       string              `yaml:"filePrefix"`
+	Bucket           string        `yaml:"bucket"`
+	Account          string        `yaml:"account"`
+	PrivateKeyFile   string        `yaml:"privateKeyFile"`
+	PrivateKey       []byte        `yaml:"-"`
+	URLValidDuration time.Duration `yaml:"urlValidDuration"`
+	Port             int           `yaml:"port"`
+	GCP              gcpConfig     `yaml:"gcp"`
 }
 
-func loadConfig(configPath string) (*configuration, error) {
+var config configuration
+
+func loadConfig(configPath string) error {
 	f, err := os.Open(configPath)
 	if err != nil {
-		return nil, configErr(err)
+		return configErr(err)
 	}
 	defer f.Close()
-	var config configuration
 	if err := yaml.NewDecoder(f).Decode(&config); err != nil {
-		return nil, configErr(err)
-	}
-	config.APIKeySet = map[string]struct{}{}
-	for _, key := range config.APIKeys {
-		config.APIKeySet[key] = struct{}{}
+		return configErr(err)
 	}
 	config.PrivateKey, err = os.ReadFile(config.PrivateKeyFile)
 	if err != nil {
-		return nil, configErr(fmt.Errorf("error loading private key: %w", err))
+		return configErr(fmt.Errorf("error loading private key: %w", err))
 	}
-	if config.FilePrefix == "" {
-		config.FilePrefix = "mission-data"
-	}
-	return &config, nil
+	return nil
 }
 
 func urlGeneratorFromConfig(config *configuration) *urlGenerator {
 	return &urlGenerator{
 		Bucket:        config.Bucket,
 		Account:       config.Account,
-		PrivateKey:    config.PrivateKey,
+		SigningKey:    config.PrivateKey,
 		ValidDuration: config.URLValidDuration,
 	}
 }
 
-type nameGenerator struct {
-	lock    sync.Mutex
-	counter int
-	prefix  string
+func newObjectName(deviceID string) string {
+	return fmt.Sprintf("%s/%d", deviceID, timeNow().Unix())
 }
 
-func newNameGenerator(prefix string) *nameGenerator {
-	return &nameGenerator{
-		prefix: prefix,
-	}
-}
-
-func (g *nameGenerator) GetName() string {
-	g.lock.Lock()
-	defer g.lock.Unlock()
-	g.counter++
-	return g.prefix + strconv.Itoa(g.counter)
-}
-
-func httpGeneratorHandler(config *configuration, gen *urlGenerator) http.Handler {
-	nameGen := newNameGenerator(config.FilePrefix)
+func urlGeneratorHandler(gen *urlGenerator, gcp gcpAPI) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		apiKey := r.URL.Query().Get("apikey")
-		if _, ok := config.APIKeySet[apiKey]; !ok {
+		auth := r.Header.Get("Authorization")
+		const authPrefixLen = len("Bearer ")
+		if len(auth) < authPrefixLen {
+			writeErrMsg(rw, http.StatusUnauthorized, "missing or invalid authorization header")
+			return
+		}
+		deviceID, err := validateJWT(r.Context(), gcp, auth[authPrefixLen:])
+		if err != nil {
+			log.Println(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
-		signedURL, err := gen.Generate(nameGen.GetName(), "PUT")
+		signedURL, err := gen.Generate(newObjectName(deviceID), "PUT")
 		if err != nil {
 			log.Println(err)
 			writeErrMsg(rw, http.StatusInternalServerError, "something went wrong")
 			return
 		}
-		log.Println(signedURL)
 		writeJSON(rw, jsonObj{"url": signedURL})
 	})
 }
 
-func printErr(a ...interface{}) {
-	fmt.Fprintln(os.Stderr, a...)
-}
-
-func main() {
+func run() int {
 	configPath := flag.String("config", "", "(required) config file path")
 	flag.Parse()
 	if *configPath == "" {
-		printErr("usage:", os.Args[0], "[flags]")
+		log.Println("usage:", os.Args[0], "[flags]")
 		flag.PrintDefaults()
-		return
+		return 1
 	}
-	config, err := loadConfig(*configPath)
+	err := loadConfig(*configPath)
 	if err != nil {
-		printErr(err)
-		return
+		log.Println(err)
+		return 1
 	}
-	gen := urlGeneratorFromConfig(config)
+	gen := urlGeneratorFromConfig(&config)
+
+	config.GCP.iotService, err = cloudiot.NewService(context.Background())
+	if err != nil {
+		log.Println(err)
+		return 1
+	}
 
 	r := mux.NewRouter()
 	r.Use(requestLoggerMiddleware)
 	r.Use(recoverPanicMiddleware)
 	r.NotFoundHandler = notFoundHandler()
-	r.NotFoundHandler = methodNotAllowedHandler()
-	r.Path("/generate-url").Methods("GET").Handler(httpGeneratorHandler(config, gen))
+	r.MethodNotAllowedHandler = methodNotAllowedHandler()
+	r.Path("/generate-url").Methods("GET").Handler(urlGeneratorHandler(gen, &config.GCP))
 
 	log.Println("listening on port", config.Port)
 	http.ListenAndServe(":"+strconv.Itoa(config.Port), r)
+	return 0
+}
+
+func main() {
+	os.Exit(run())
 }

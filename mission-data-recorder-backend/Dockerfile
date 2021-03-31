@@ -3,10 +3,11 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
-RUN CGO_ENABLED=0 go build -a -tags netgo -ldflags '-w' -o mission-data-recorder-backend
+RUN go build -o mission-data-recorder-backend
 
-FROM scratch
+FROM ubuntu:20.04
 WORKDIR /app
+RUN apt-get update && apt-get install ca-certificates -y
 COPY --from=builder /build/mission-data-recorder-backend .
 EXPOSE 9000
 ENTRYPOINT [ "/app/mission-data-recorder-backend" ]
