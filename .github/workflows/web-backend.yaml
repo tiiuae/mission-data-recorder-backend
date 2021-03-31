@@ -1,4 +1,4 @@
-name: main
+name: web-backend
 
 on:
   push:
@@ -28,4 +28,3 @@ jobs:
           file: ./web-backend/Dockerfile
           push: true
           tags: ghcr.io/tiiuae/tii-web-backend:latest
-

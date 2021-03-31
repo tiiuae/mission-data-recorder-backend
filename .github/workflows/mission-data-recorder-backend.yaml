@@ -1,4 +1,4 @@
-name: main
+name: mission-data-recorder-backend
 
 on:
   push:
@@ -28,4 +28,3 @@ jobs:
           file: ./mission-data-recorder-backend/Dockerfile
           push: true
           tags: ghcr.io/tiiuae/tii-mission-data-recorder-backend:latest
-
