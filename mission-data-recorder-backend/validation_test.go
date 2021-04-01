@@ -209,7 +209,7 @@ func panicOnErr(x interface{}, err error) interface{} {
 	return x
 }
 
-func TestURLGeneratorHandler(t *testing.T) {
+func TestValidateJWT(t *testing.T) {
 	publicKey := `-----BEGIN CERTIFICATE-----
 MIIBEDCBuAIJANWAlyQ8yP7RMAoGCCqGSM49BAMCMBExDzANBgNVBAMMBnVudXNl
 ZDAeFw0yMTAzMzAxNDAyNThaFw0yMTA0MjkxNDAyNThaMBExDzANBgNVBAMMBnVu
