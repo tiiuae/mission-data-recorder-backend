@@ -131,7 +131,7 @@ func run() int {
 	r.Use(recoverPanicMiddleware)
 	r.NotFoundHandler = notFoundHandler()
 	r.MethodNotAllowedHandler = methodNotAllowedHandler()
-	r.Path("/generate-url").Methods("GET").Handler(urlGeneratorHandler(gen, &config.GCP))
+	r.Path("/generate-url").Methods("POST").Handler(urlGeneratorHandler(gen, &config.GCP))
 
 	log.Println("listening on port", config.Port)
 	http.ListenAndServe(":"+strconv.Itoa(config.Port), r)
