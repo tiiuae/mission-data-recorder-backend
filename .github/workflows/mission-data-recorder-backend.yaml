@@ -12,6 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Run tests
+        run: go test ./...
+        working-directory: ./mission-data-recorder-backend/
+
       - uses: docker/setup-buildx-action@v1
 
       - name: Login to GitHub Container Registry
