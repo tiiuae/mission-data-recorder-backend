@@ -5,6 +5,7 @@ on:
     branches: main
     paths:
       - mission-data-recorder-backend/**
+  workflow_dispatch:
 
 jobs:
   tii-mission-data-recorder-backend:
