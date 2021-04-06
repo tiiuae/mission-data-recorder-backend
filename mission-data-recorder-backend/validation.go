@@ -86,7 +86,7 @@ func validateDeviceCredential(
 	}
 	pubKey, alg, err := parsePublicKey(cred.PublicKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
 	}
 	if alg != keyAlgorithm {
 		return nil, nil
@@ -142,7 +142,7 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (string, erro
 		},
 	)
 	if !token.Valid {
-		return "", err
+		return "", fmt.Errorf("failed to validate token: %w", err)
 	}
 	return deviceID, nil
 }
