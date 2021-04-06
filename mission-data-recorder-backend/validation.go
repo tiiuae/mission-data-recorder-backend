@@ -146,3 +146,11 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (string, erro
 	}
 	return deviceID, nil
 }
+
+func getDeviceIDWithoutValidation(rawToken string) (string, error) {
+	token, _, err := (&jwt.Parser{}).ParseUnverified(rawToken, &jwtClaims{})
+	if err != nil {
+		return "", err
+	}
+	return token.Claims.(*jwtClaims).DeviceID, nil
+}

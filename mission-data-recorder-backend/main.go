@@ -4,9 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -48,6 +51,8 @@ type configuration struct {
 	URLValidDuration time.Duration `yaml:"urlValidDuration"`
 	Port             int           `yaml:"port"`
 	GCP              gcpConfig     `yaml:"gcp"`
+	LocalDir         string        `yaml:"fileStorageDirectory"`
+	Host             string        `yaml:"host"`
 }
 
 var config configuration
@@ -65,6 +70,9 @@ func loadConfig(configPath string) error {
 	if err != nil {
 		return configErr(fmt.Errorf("error loading private key: %w", err))
 	}
+	if config.Host == "" {
+		config.Host = "localhost:" + strconv.Itoa(config.Port)
+	}
 	return nil
 }
 
@@ -81,15 +89,27 @@ func newObjectName(deviceID string) string {
 	return fmt.Sprintf("%s/%d", deviceID, timeNow().Unix())
 }
 
-func urlGeneratorHandler(gen *urlGenerator, gcp gcpAPI) http.Handler {
+func readAuthJWT(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	const authPrefixLen = len("Bearer ")
+	if len(auth) < authPrefixLen {
+		return ""
+	}
+	return auth[authPrefixLen:]
+}
+
+func internalServerErr(rw http.ResponseWriter) {
+	writeErrMsg(rw, http.StatusInternalServerError, "something went wrong")
+}
+
+func signedURLGeneratorHandler(gen *urlGenerator, gcp gcpAPI) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		const authPrefixLen = len("Bearer ")
-		if len(auth) < authPrefixLen {
+		rawToken := readAuthJWT(r)
+		if rawToken == "" {
 			writeErrMsg(rw, http.StatusUnauthorized, "missing or invalid authorization header")
 			return
 		}
-		deviceID, err := validateJWT(r.Context(), gcp, auth[authPrefixLen:])
+		deviceID, err := validateJWT(r.Context(), gcp, rawToken)
 		if err != nil {
 			log.Println(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
@@ -98,10 +118,58 @@ func urlGeneratorHandler(gen *urlGenerator, gcp gcpAPI) http.Handler {
 		signedURL, err := gen.Generate(newObjectName(deviceID), "PUT")
 		if err != nil {
 			log.Println(err)
-			writeErrMsg(rw, http.StatusInternalServerError, "something went wrong")
+			internalServerErr(rw)
 			return
 		}
 		writeJSON(rw, jsonObj{"url": signedURL})
+	})
+}
+
+func localURLGeneratorHandler(host string) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rawToken := readAuthJWT(r)
+		if rawToken == "" {
+			writeErrMsg(rw, http.StatusUnauthorized, "missing or invalid authorization header")
+			return
+		}
+		deviceID, err := getDeviceIDWithoutValidation(rawToken)
+		if err != nil {
+			log.Println(err)
+			writeErrMsg(rw, http.StatusForbidden, "forbidden")
+			return
+		}
+		writeJSON(rw, jsonObj{
+			"url": fmt.Sprintf("http://%s/upload?device=%s", host, url.QueryEscape(deviceID)),
+		})
+	})
+}
+
+func receiveUploadHandler(dirPath string) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		device := r.URL.Query().Get("device")
+		if device == "" {
+			writeErrMsg(rw, http.StatusBadRequest, "parameter 'device' is missing")
+			return
+		}
+		dir := filepath.Join(dirPath, device)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Println(err)
+			internalServerErr(rw)
+			return
+		}
+		f, err := os.Create(filepath.Join(dir, strconv.FormatInt(timeNow().Unix(), 10)))
+		if err != nil {
+			log.Println(err)
+			internalServerErr(rw)
+			return
+		}
+		defer f.Close()
+		if _, err := io.Copy(f, r.Body); err != nil {
+			log.Println(err)
+			writeErrMsg(rw, http.StatusBadRequest, "failed to store the file")
+			return
+		}
+		rw.WriteHeader(http.StatusOK)
 	})
 }
 
@@ -118,20 +186,26 @@ func run() int {
 		log.Println(err)
 		return 1
 	}
-	gen := urlGeneratorFromConfig(&config)
-
-	config.GCP.iotService, err = cloudiot.NewService(context.Background())
-	if err != nil {
-		log.Println(err)
-		return 1
-	}
 
 	r := mux.NewRouter()
 	r.Use(requestLoggerMiddleware)
 	r.Use(recoverPanicMiddleware)
 	r.NotFoundHandler = notFoundHandler()
 	r.MethodNotAllowedHandler = methodNotAllowedHandler()
-	r.Path("/generate-url").Methods("POST").Handler(urlGeneratorHandler(gen, &config.GCP))
+
+	var urlGenHandler http.Handler
+	if config.LocalDir == "" {
+		config.GCP.iotService, err = cloudiot.NewService(context.Background())
+		if err != nil {
+			log.Println(err)
+			return 1
+		}
+		urlGenHandler = signedURLGeneratorHandler(urlGeneratorFromConfig(&config), &config.GCP)
+	} else {
+		urlGenHandler = localURLGeneratorHandler(config.Host)
+		r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(config.LocalDir))
+	}
+	r.Path("/generate-url").Methods("POST").Handler(urlGenHandler)
 
 	log.Println("listening on port", config.Port)
 	http.ListenAndServe(":"+strconv.Itoa(config.Port), r)
