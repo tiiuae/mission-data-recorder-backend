@@ -173,6 +173,10 @@ func receiveUploadHandler(dirPath string) http.Handler {
 	})
 }
 
+func healthCheck(rw http.ResponseWriter, r *http.Request) {
+	rw.WriteHeader(http.StatusOK)
+}
+
 func run() int {
 	configPath := flag.String("config", "", "(required) config file path")
 	flag.Parse()
@@ -192,6 +196,7 @@ func run() int {
 	r.Use(recoverPanicMiddleware)
 	r.NotFoundHandler = notFoundHandler()
 	r.MethodNotAllowedHandler = methodNotAllowedHandler()
+	r.Path("/healthz").Methods("GET").HandlerFunc(healthCheck)
 
 	var urlGenHandler http.Handler
 	if config.LocalDir == "" {
