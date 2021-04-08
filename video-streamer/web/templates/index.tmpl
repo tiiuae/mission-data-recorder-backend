@@ -1,0 +1,15 @@
+<html>
+<meta http-equiv="Expires" content="0">
+<meta http-equiv="Last-Modified" content="0">
+<meta http-equiv="Cache-Control" content="no-cache, mustrevalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<script type="text/javascript" src="/static/js/jquery-3.4.1.min.js"></script>
+
+<div>
+    <input type="hidden" name="suuid" id="suuid" value="{{ .suuid }}">
+    <input type="hidden" name="port" id="port" value="{{ .port }}">
+    <video id="livestream" style="width:1280px;height:720px" controls autoplay muted></video>
+</div>
+
+<script type="text/javascript" src="/static/js/app.js?ver={{ .version }}"></script>
+</html>
