@@ -66,9 +66,11 @@ func loadConfig(configPath string) error {
 	if err := yaml.NewDecoder(f).Decode(&config); err != nil {
 		return configErr(err)
 	}
-	config.PrivateKey, err = os.ReadFile(config.PrivateKeyFile)
-	if err != nil {
-		return configErr(fmt.Errorf("error loading private key: %w", err))
+	if config.LocalDir == "" {
+		config.PrivateKey, err = os.ReadFile(config.PrivateKeyFile)
+		if err != nil {
+			return configErr(fmt.Errorf("error loading private key: %w", err))
+		}
 	}
 	if config.Host == "" {
 		config.Host = "http://localhost:" + strconv.Itoa(config.Port)
