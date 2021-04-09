@@ -71,7 +71,7 @@ func loadConfig(configPath string) error {
 		return configErr(fmt.Errorf("error loading private key: %w", err))
 	}
 	if config.Host == "" {
-		config.Host = "localhost:" + strconv.Itoa(config.Port)
+		config.Host = "http://localhost:" + strconv.Itoa(config.Port)
 	}
 	return nil
 }
@@ -139,7 +139,7 @@ func localURLGeneratorHandler(host string) http.Handler {
 			return
 		}
 		writeJSON(rw, jsonObj{
-			"url": fmt.Sprintf("http://%s/upload?device=%s", host, url.QueryEscape(deviceID)),
+			"url": fmt.Sprintf("%s/upload?device=%s", host, url.QueryEscape(deviceID)),
 		})
 	})
 }
