@@ -1,5 +1,4 @@
-/server-config.yaml
-/kubernetes.yaml
+*.yaml
 *.p12
 *.pem
 *.out
