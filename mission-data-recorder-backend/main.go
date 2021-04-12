@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -153,7 +154,7 @@ func receiveUploadHandler(dirPath string) http.Handler {
 			writeErrMsg(rw, http.StatusBadRequest, "parameter 'device' is missing")
 			return
 		}
-		dir := filepath.Join(dirPath, device)
+		dir := filepath.Join(dirPath, strings.ReplaceAll(device, ".", "_"))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Println(err)
 			internalServerErr(rw)
