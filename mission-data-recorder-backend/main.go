@@ -16,7 +16,9 @@ import (
 
 	"cloud.google.com/go/storage"
 	"github.com/gorilla/mux"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudiot/v1"
+	"google.golang.org/api/option"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,6 +51,7 @@ type configuration struct {
 	Account          string        `yaml:"account"`
 	PrivateKeyFile   string        `yaml:"privateKeyFile"`
 	PrivateKey       []byte        `yaml:"-"`
+	JSONCredentials  []byte        `yaml:"-"`
 	URLValidDuration time.Duration `yaml:"urlValidDuration"`
 	Port             int           `yaml:"port"`
 	GCP              gcpConfig     `yaml:"gcp"`
@@ -68,10 +71,15 @@ func loadConfig(configPath string) error {
 		return configErr(err)
 	}
 	if config.LocalDir == "" {
-		config.PrivateKey, err = os.ReadFile(config.PrivateKeyFile)
+		config.JSONCredentials, err = os.ReadFile(config.PrivateKeyFile)
 		if err != nil {
-			return configErr(fmt.Errorf("error loading private key: %w", err))
+			return configErr(err)
 		}
+		keyConfig, err := google.JWTConfigFromJSON(config.JSONCredentials)
+		if err != nil {
+			return configErr(err)
+		}
+		config.PrivateKey = keyConfig.PrivateKey
 	}
 	if config.Host == "" {
 		config.Host = "http://localhost:" + strconv.Itoa(config.Port)
@@ -203,7 +211,10 @@ func run() int {
 
 	var urlGenHandler http.Handler
 	if config.LocalDir == "" {
-		config.GCP.iotService, err = cloudiot.NewService(context.Background())
+		config.GCP.iotService, err = cloudiot.NewService(
+			context.Background(),
+			option.WithCredentialsJSON(config.JSONCredentials),
+		)
 		if err != nil {
 			log.Println(err)
 			return 1
