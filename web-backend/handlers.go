@@ -215,7 +215,38 @@ func handleMQTTEvent(deviceID string, topic string, payload []byte) {
 	switch topic {
 	case "telemetry":
 		go handleTelemetryEvent(context.Background(), deviceID, payload)
+	case "debug-values":
+		go handleDebugEvent(context.Background(), deviceID, payload)
 	}
+}
+
+type websocketEvent struct {
+	Event   string      `json:"event"`
+	Device  string      `json:"device"`
+	Payload interface{} `json:"payload"`
+}
+
+type telemetryEvent struct {
+	LocationUpdated  bool    `json:"location_updated"`
+	Lat              float64 `json:"lat"`
+	Lon              float64 `json:"lon"`
+	Heading          float32 `json:"heading"`
+	AltitudeFromHome float32 `json:"altitude_from_home"`
+	DistanceFromHome float32 `json:"distance_from_home"`
+
+	BatteryUpdated   bool    `json:"battery_updated"`
+	BatteryVoltage   float32 `json:"battery_voltage"`
+	BatteryRemaining float32 `json:"battery_remaining"`
+
+	StateUpdated   bool   `json:"state_updated"`
+	ArmingState    string `json:"arming_state"`
+	NavigationMode string `json:"navigation_mode"`
+}
+
+type debugValueEvent struct {
+	Key     string    `json:"key"`
+	Value   string    `json:"value"`
+	Updated time.Time `json:"updated"`
 }
 
 func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
@@ -255,39 +286,58 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 		navMode = "UNKNOWN MODE"
 	}
 
-	msg, _ := json.Marshal(struct {
-		Device           string  `json:"device"`
-		LocationUpdated  bool    `json:"location_updated"`
-		Lat              float64 `json:"lat"`
-		Lon              float64 `json:"lon"`
-		Heading          float32 `json:"heading"`
-		AltitudeFromHome float32 `json:"altitude_from_home"`
-		DistanceFromHome float32 `json:"distance_from_home"`
+	msg, _ := json.Marshal(websocketEvent{
+		Event:  "telemetry",
+		Device: deviceID,
+		Payload: telemetryEvent{
+			LocationUpdated:  telemetry.LocationUpdated,
+			Lat:              telemetry.Lat,
+			Lon:              telemetry.Lon,
+			Heading:          telemetry.Heading,
+			AltitudeFromHome: telemetry.AltitudeFromHome,
+			DistanceFromHome: telemetry.DistanceFromHome,
 
-		BatteryUpdated   bool    `json:"battery_updated"`
-		BatteryVoltage   float32 `json:"battery_voltage"`
-		BatteryRemaining float32 `json:"battery_remaining"`
+			BatteryUpdated:   telemetry.BatteryUpdated,
+			BatteryVoltage:   telemetry.BatteryVoltageV,
+			BatteryRemaining: telemetry.BatteryRemaining,
 
-		StateUpdated   bool   `json:"state_updated"`
-		ArmingState    string `json:"arming_state"`
-		NavigationMode string `json:"navigation_mode"`
-	}{
-		Device:           deviceID,
-		LocationUpdated:  telemetry.LocationUpdated,
-		Lat:              telemetry.Lat,
-		Lon:              telemetry.Lon,
-		Heading:          telemetry.Heading,
-		AltitudeFromHome: telemetry.AltitudeFromHome,
-		DistanceFromHome: telemetry.DistanceFromHome,
-
-		BatteryUpdated:   telemetry.BatteryUpdated,
-		BatteryVoltage:   telemetry.BatteryVoltageV,
-		BatteryRemaining: telemetry.BatteryRemaining,
-
-		StateUpdated:   telemetry.StateUpdated,
-		ArmingState:    armingState,
-		NavigationMode: navMode,
+			StateUpdated:   telemetry.StateUpdated,
+			ArmingState:    armingState,
+			NavigationMode: navMode,
+		},
 	})
-	// send updates to all listeners
+
 	go publishMessage(msg)
+}
+
+type debugValue struct {
+	Updated time.Time
+	Value   string
+}
+
+type debugValues map[string]debugValue
+
+func handleDebugEvent(c context.Context, deviceID string, payload []byte) {
+	var dv debugValues
+	err := json.Unmarshal(payload, &dv)
+	if err != nil {
+		log.Printf("Could not unmarshal debug-value message: %v", err)
+		return
+	}
+
+	go func() {
+		for k, v := range dv {
+			msg, _ := json.Marshal(websocketEvent{
+				Event:  "debug-value",
+				Device: deviceID,
+				Payload: debugValueEvent{
+					Key:     k,
+					Value:   v.Value,
+					Updated: v.Updated,
+				},
+			})
+
+			publishMessage(msg)
+		}
+	}()
 }
