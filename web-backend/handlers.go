@@ -311,8 +311,8 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 }
 
 type debugValue struct {
-	Updated time.Time
-	Value   string
+	Updated time.Time `json:"updated"`
+	Value   string    `json:"value"`
 }
 
 type debugValues map[string]debugValue
@@ -325,7 +325,15 @@ func handleDebugEvent(c context.Context, deviceID string, payload []byte) {
 		return
 	}
 
+	msg, _ := json.Marshal(websocketEvent{
+		Event:   "debug-values",
+		Device:  deviceID,
+		Payload: dv,
+	})
+	go publishMessage(msg)
+
 	go func() {
+
 		for k, v := range dv {
 			msg, _ := json.Marshal(websocketEvent{
 				Event:  "debug-value",

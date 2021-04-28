@@ -26,6 +26,7 @@ func main() {
 		mqttPub = NewIoTPublisher()
 		// go pullIoTCoreMessages("telemetry-web-backend-pull-sub")
 		go pullIoTCoreMessages("iot-device-telemetry-web-backend-pull-sub")
+		go pullIoTCoreMessages("iot-device-debug-values-web-backend-pull-sub")
 	} else if mqttBrokerAddress == "cloud-push" {
 		log.Println("MQTT: IoT Core push")
 		mqttPub = NewIoTPublisher()
