@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -331,6 +332,10 @@ func handleDebugValues(c context.Context, deviceID string, payload []byte) {
 		v.Key = k
 		dvs = append(dvs, v)
 	}
+
+	sort.Slice(dvs, func(i, j int) bool {
+		return dvs[i].Key < dvs[j].Key
+	})
 
 	msg, _ := json.Marshal(websocketEvent{
 		Event:   "debug-values",
