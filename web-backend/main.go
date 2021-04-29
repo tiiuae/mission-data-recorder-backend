@@ -27,6 +27,7 @@ func main() {
 		// go pullIoTCoreMessages("telemetry-web-backend-pull-sub")
 		go pullIoTCoreMessages("iot-device-telemetry-web-backend-pull-sub")
 		go pullIoTCoreMessages("iot-device-debug-values-web-backend-pull-sub")
+		go pullIoTCoreMessages("iot-device-debug-events-web-backend-pull-sub")
 	} else if mqttBrokerAddress == "cloud-push" {
 		log.Println("MQTT: IoT Core push")
 		mqttPub = NewIoTPublisher()
@@ -80,5 +81,5 @@ func setCORSHeader(handler http.Handler) http.Handler {
 
 func isValidOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
-	return strings.HasSuffix(o, "localhost:8080") || strings.HasSuffix(o, "auto-fleet-mgnt.ew.r.appspot.com") || strings.HasSuffix(o, "sacplatform.com")
+	return strings.HasSuffix(o, "localhost:8080") || strings.HasSuffix(o, "sacplatform.com")
 }

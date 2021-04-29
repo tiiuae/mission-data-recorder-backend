@@ -216,6 +216,8 @@ func handleMQTTEvent(deviceID string, topic string, payload []byte) {
 	case "telemetry":
 		go handleTelemetryEvent(context.Background(), deviceID, payload)
 	case "debug-values":
+		go handleDebugValues(context.Background(), deviceID, payload)
+	case "debug-events":
 		go handleDebugEvent(context.Background(), deviceID, payload)
 	}
 }
@@ -243,7 +245,13 @@ type telemetryEvent struct {
 	NavigationMode string `json:"navigation_mode"`
 }
 
-type debugValueEvent struct {
+type debugEvent struct {
+	From    string `json:"from"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+type debugValue struct {
 	Key     string    `json:"key"`
 	Value   string    `json:"value"`
 	Updated time.Time `json:"updated"`
@@ -310,42 +318,40 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 	go publishMessage(msg)
 }
 
-type debugValue struct {
-	Updated time.Time `json:"updated"`
-	Value   string    `json:"value"`
-}
-
-type debugValues map[string]debugValue
-
-func handleDebugEvent(c context.Context, deviceID string, payload []byte) {
-	var dv debugValues
+func handleDebugValues(c context.Context, deviceID string, payload []byte) {
+	var dv map[string]debugValue
 	err := json.Unmarshal(payload, &dv)
 	if err != nil {
 		log.Printf("Could not unmarshal debug-value message: %v", err)
 		return
 	}
 
+	dvs := make([]debugValue, 0)
+	for k, v := range dv {
+		v.Key = k
+		dvs = append(dvs, v)
+	}
+
 	msg, _ := json.Marshal(websocketEvent{
 		Event:   "debug-values",
 		Device:  deviceID,
-		Payload: dv,
+		Payload: dvs,
 	})
 	go publishMessage(msg)
+}
 
-	go func() {
+func handleDebugEvent(c context.Context, deviceID string, payload []byte) {
+	var de debugEvent
+	err := json.Unmarshal(payload, &de)
+	if err != nil {
+		log.Printf("Could not unmarshal debug-event message: %v", err)
+		return
+	}
 
-		for k, v := range dv {
-			msg, _ := json.Marshal(websocketEvent{
-				Event:  "debug-value",
-				Device: deviceID,
-				Payload: debugValueEvent{
-					Key:     k,
-					Value:   v.Value,
-					Updated: v.Updated,
-				},
-			})
-
-			publishMessage(msg)
-		}
-	}()
+	msg, _ := json.Marshal(websocketEvent{
+		Event:   "debug-event",
+		Device:  deviceID,
+		Payload: de,
+	})
+	go publishMessage(msg)
 }
