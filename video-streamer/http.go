@@ -90,16 +90,20 @@ func ws(ws *websocket.Conn) {
 			}
 		}
 	}()
-	noVideo := time.NewTimer(10 * time.Second)
+	noVideoWarning := time.NewTimer(10 * time.Second)
+	noVideo := time.NewTimer(30 * time.Second)
 	var timeLine = make(map[int8]time.Duration)
 	for {
 		select {
+		case <-noVideoWarning.C:
+			log.Println("noVideo 10 sec warning")
 		case <-noVideo.C:
-			log.Println("noVideo")
+			log.Println("noVideo 30 sec -> closing stream")
 			return
 		case pck := <-ch:
 			if pck.IsKeyFrame {
-				noVideo.Reset(10 * time.Second)
+				noVideoWarning.Reset(10 * time.Second)
+				noVideo.Reset(30 * time.Second)
 				start = true
 			}
 			if !start {
