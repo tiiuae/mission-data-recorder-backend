@@ -24,7 +24,7 @@ func main() {
 }
 
 func registerRoutes(router *httprouter.Router) {
-	router.HandlerFunc(http.MethodGet, "/v1/simulations", v1.GetSimulationsHandler)
-	router.HandlerFunc(http.MethodPost, "/v1/simulations", v1.CreateSimulationHandler)
-	router.HandlerFunc(http.MethodGet, "/healthz", v1.GETHealthz)
+	router.GET("/v1/simulations", v1.GetSimulationsHandler)
+	router.POST("/v1/simulations", v1.CreateSimulationHandler)
+	router.GET("/healthz", v1.GETHealthz)
 }

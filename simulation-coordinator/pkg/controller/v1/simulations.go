@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/julienschmidt/httprouter"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/tiiuae/fleet-management/simulation-coordinator/pkg/kube"
 )
 
-func GetSimulationsHandler(w http.ResponseWriter, r *http.Request) {
+func GetSimulationsHandler(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	c := r.Context()
 	kube := kube.GetKube()
 	namespaces, err := kube.CoreV1().Namespaces().List(c, metav1.ListOptions{LabelSelector: "dronsole-type=simulation"})
@@ -71,7 +72,7 @@ func generateSimulationName(c context.Context, kube *kubernetes.Clientset) strin
 
 	panic("Could not find unique name for simulation")
 }
-func CreateSimulationHandler(w http.ResponseWriter, r *http.Request) {
+func CreateSimulationHandler(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	c := r.Context()
 	var request struct {
 		World         string `json:"world"`
