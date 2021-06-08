@@ -1,4 +1,4 @@
-package main
+package v1
 
 import (
 	"context"
@@ -11,31 +11,13 @@ import (
 	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+
+	"github.com/tiiuae/fleet-management/simulation-coordinator/pkg/kube"
 )
 
-var kubernetesClientset *kubernetes.Clientset
-
-func getKube() *kubernetes.Clientset {
-
-	if kubernetesClientset == nil {
-		// creates the in-cluster config
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			panic(err.Error())
-		}
-		// creates the clientset
-		kubernetesClientset, err = kubernetes.NewForConfig(config)
-		if err != nil {
-			panic(err.Error())
-		}
-	}
-	return kubernetesClientset
-}
-
-func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
+func GetSimulationsHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
-	kube := getKube()
+	kube := kube.GetKube()
 	namespaces, err := kube.CoreV1().Namespaces().List(c, metav1.ListOptions{LabelSelector: "dronsole-type=simulation"})
 	if err != nil {
 		writeError(w, "Could not get simulations", err, http.StatusInternalServerError)
@@ -89,7 +71,7 @@ func generateSimulationName(c context.Context, kube *kubernetes.Clientset) strin
 
 	panic("Could not find unique name for simulation")
 }
-func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
+func CreateSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	var request struct {
 		World         string `json:"world"`
@@ -103,7 +85,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kube := getKube()
+	kube := kube.GetKube()
 	name := generateSimulationName(c, kube)
 	log.Printf("Creating simulation %s with world %s", name, request.World)
 }

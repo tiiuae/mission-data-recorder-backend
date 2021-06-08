@@ -1,19 +1,11 @@
-package main
+package v1
 
 import (
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-
-	"github.com/julienschmidt/httprouter"
 )
-
-func registerRoutes(router *httprouter.Router) {
-	router.HandlerFunc(http.MethodGet, "/simulations", getSimulationsHandler)
-	router.HandlerFunc(http.MethodPost, "/simulations", createSimulationHandler)
-	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
-}
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	b, err := json.Marshal(data)
@@ -31,8 +23,4 @@ func writeError(w http.ResponseWriter, message string, err error, code int) {
 	text := fmt.Sprintf("%s: %v", message, err)
 	log.Println(text)
 	http.Error(w, text, code)
-}
-
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
 }

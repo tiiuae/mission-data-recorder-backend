@@ -1,5 +1,9 @@
 # simulation-coordinator container
 
+Enables multi-tenancy on the dronsole SaaS K8s cluster.
+Isolates the platform users from the complexities of K8s.
+Provisions new namespaces for authorized users and deploys simulation entities in it.
+
 ## Building and running container
 
 Build and tag container
