@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
+	"github.com/tiiuae/fleet-management/web-backend/gpstrail"
 	"google.golang.org/api/cloudiot/v1"
 	"nhooyr.io/websocket"
 )
@@ -54,6 +56,7 @@ type subscriber struct {
 var (
 	subscribersMu sync.Mutex
 	subscribers   map[*subscriber]struct{} = make(map[*subscriber]struct{})
+	gt            *gpstrail.GpsTrail       = gpstrail.New()
 )
 
 func getDronesMinikube(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +214,64 @@ func publishMessage(message []byte) {
 	}
 }
 
+func subscribeGpsTrail(w http.ResponseWriter, r *http.Request) {
+	c := r.Context()
+	deviceIDs := r.URL.Query()["id"]
+	// accept websocket
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		OriginPatterns: []string{"localhost:8080", "sacplatform.com"},
+	})
+	if err != nil {
+		log.Printf("Unable to accept websocket: %v", err)
+		return
+	}
+	defer conn.Close(websocket.StatusInternalError, "")
+
+	id := uuid.New().String()
+	inbox := make(chan []*gpstrail.Position, 5)
+	close := func() {
+		conn.Close(websocket.StatusPolicyViolation, "connection too slow to keep up with messages")
+	}
+	gt.Subscribe(id, inbox, close)
+	defer gt.Unsubscribe(id)
+
+	for {
+		select {
+		case <-c.Done():
+			log.Printf("Context done: %v", c.Err())
+			return
+		case positions := <-inbox:
+			for _, pos := range positions {
+				if len(deviceIDs) > 0 && !containsString(pos.Device, deviceIDs) {
+					continue
+				}
+				msg, err := json.Marshal(pos)
+				if err != nil {
+					continue
+				}
+				err = writeTimeout(c, 2*time.Second, conn, msg)
+				if err != nil {
+					if websocket.CloseStatus(err) == websocket.StatusNormalClosure ||
+						websocket.CloseStatus(err) == websocket.StatusGoingAway {
+						return
+					}
+					log.Printf("Write to websocket failed: %v", err)
+					return
+				}
+			}
+		}
+	}
+}
+
+func containsString(key string, values []string) bool {
+	for _, x := range values {
+		if x == key {
+			return true
+		}
+	}
+	return false
+}
+
 func handleMQTTEvent(deviceID string, topic string, payload []byte) {
 	log.Printf("Event: %s %s\n", deviceID, topic)
 	switch topic {
@@ -317,6 +378,7 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 	})
 
 	go publishMessage(msg)
+	gt.Post(&gpstrail.Position{Device: deviceID, Timestamp: time.Now(), Lat: telemetry.Lat, Lon: telemetry.Lon})
 }
 
 func handleDebugValues(c context.Context, deviceID string, payload []byte) {
