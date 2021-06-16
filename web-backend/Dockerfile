@@ -5,6 +5,7 @@ COPY go.mod .
 COPY go.sum .
 RUN go mod download
 COPY *.go ./
+COPY gpstrail/ ./gpstrail/
 RUN GOOS=linux GOARCH=amd64 go build -o web-backend .
 
 
