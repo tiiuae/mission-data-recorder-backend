@@ -1,4 +1,4 @@
-package kube
+package main
 
 import (
 	"k8s.io/client-go/kubernetes"
@@ -7,7 +7,7 @@ import (
 
 var kubernetesClientset *kubernetes.Clientset
 
-func GetKube() *kubernetes.Clientset {
+func getKube() *kubernetes.Clientset {
 
 	if kubernetesClientset == nil {
 		// creates the in-cluster config
