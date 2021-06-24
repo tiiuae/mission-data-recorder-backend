@@ -13,7 +13,6 @@ import (
 
 const (
 	registryID    = "fleet-registry"
-	projectID     = "auto-fleet-mgnt"
 	region        = "europe-west1"
 	algorithm     = "RS256"
 	defaultServer = "ssl://mqtt.googleapis.com:8883"

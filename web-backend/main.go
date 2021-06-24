@@ -13,11 +13,17 @@ import (
 
 var mqttClient mqtt.Client
 var mqttPub MqttPublisher
+var projectID string
 
 func main() {
 	if len(os.Args) != 2 {
 		fmt.Println("usage: web-backend <mqtt-broker-address> | cloud-push | cloud-pull")
 		return
+	}
+
+	projectID = os.Getenv("PROJECT_ID")
+	if projectID == "" {
+		projectID = "auto-fleet-mgnt"
 	}
 
 	mqttBrokerAddress := os.Args[1]

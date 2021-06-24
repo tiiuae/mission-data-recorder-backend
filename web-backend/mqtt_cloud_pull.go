@@ -9,7 +9,7 @@ import (
 
 func pullIoTCoreMessages(subscription string) {
 	ctx := context.Background()
-	client, err := pubsub.NewClient(ctx, "auto-fleet-mgnt")
+	client, err := pubsub.NewClient(ctx, projectID)
 	if err != nil {
 		log.Fatalf("Failed to create pubsub client %v", err)
 	}
