@@ -7,16 +7,35 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/pkg/errors"
 	"google.golang.org/api/cloudiot/v1"
 	"gopkg.in/yaml.v2"
 )
 
 // DroneConfig contains fields to be sent to drone via Cloud IoT Core
 type DroneConfig struct {
-	Profile struct {
-		URL     string
-		HashSum string
-	}
+	Profile             *ProfileConfig     `yaml:"profile"`
+	InitialWifi         *InitialWifiConfig `yaml:"initial-wifi"`
+	MissionDataRecorder interface{}        `yaml:"mission-data-recorder"`
+}
+
+type ProfileConfig struct {
+	URL     string `yaml:"url"`
+	HashSum string `yaml:"hashsum"`
+}
+
+type InitialWifiConfig struct {
+	ApiVersion int    `yaml:"api_version"`
+	SSID       string `yaml:"ssid"`
+	Key        string `yaml:"key"`
+	Enc        string `yaml:"enc"`
+	APMAC      string `yaml:"ap_mac"`
+	Country    string `yaml:"country"`
+	Frequency  string `yaml:"frequency"`
+	IP         string `yaml:"ip"`
+	Subnet     string `yaml:"subnet"`
+	TXPower    string `yaml:"tx_power"`
+	Mode       string `yaml:"mode"`
 }
 
 func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +44,7 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		Profile   struct {
 			URL     string `json:"url"`
 			HashSum string `json:"hashsum"`
-		}
+		} `json:"profile"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&request)
 	r.Body.Close()
@@ -51,11 +70,8 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, drone := range devices.Devices {
-		var cfg DroneConfig
-		err := yaml.Unmarshal([]byte(drone.Config.BinaryData), &cfg)
-		if err != nil {
-			log.Fatalf("Could not unmarshal configuration: %v", err)
-		}
+		cfg := deserializeConfigOrDefault(drone)
+
 		if cfg.Profile.URL == request.Profile.URL && cfg.Profile.HashSum == request.Profile.HashSum {
 			// no need for update - the device has this exact profile already active
 			continue
@@ -64,20 +80,102 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		// update the configuration in IoT Core
 		cfg.Profile.URL = request.Profile.URL
 		cfg.Profile.HashSum = request.Profile.HashSum
-		configBytes, err := yaml.Marshal(cfg)
+
+		newCfg, err := serializeConfig(cfg)
 		if err != nil {
-			log.Fatalf("Could not marshal configuration: %v", err)
+			log.Printf("Could not serialize configuration: %v", err)
+			writeError(w, "Could not serialize configuration", err, http.StatusInternalServerError)
+			return
 		}
-		configBytesBase64 := base64.StdEncoding.EncodeToString(configBytes)
+
 		modifyRequest := cloudiot.ModifyCloudToDeviceConfigRequest{
-			BinaryData:      string(configBytesBase64),
+			BinaryData:      newCfg,
 			VersionToUpdate: drone.Config.Version,
 		}
 		deviceName := fmt.Sprintf("%s/devices/%s", parent, drone.Id)
 		updateCall := client.Projects.Locations.Registries.Devices.ModifyCloudToDeviceConfig(deviceName, &modifyRequest)
 		_, err = updateCall.Do()
 		if err != nil {
-			log.Fatalf("Could not update configuration: %v", err)
+			log.Printf("Could not update configuration: %v", err)
+			writeError(w, "Could not update configuration", err, http.StatusInternalServerError)
+			return
 		}
+	}
+}
+
+func deserializeConfigOrDefault(device *cloudiot.Device) *DroneConfig {
+	config, err := deserializeConfig(device)
+	if err != nil {
+		log.Printf("Invalid configuration -> using default: %v", err)
+		return defaultConfiguration()
+	}
+
+	// Fill missing defaults
+	if config.Profile == nil {
+		config.Profile = defaultProfile()
+	}
+	if config.InitialWifi == nil {
+		config.InitialWifi = defaultInitialWifi()
+	}
+
+	return config
+}
+
+func deserializeConfig(device *cloudiot.Device) (*DroneConfig, error) {
+	if device.Config.BinaryData == "" {
+		return nil, errors.New("No configuration")
+	}
+
+	var config DroneConfig
+	yamlBytes, err := base64.StdEncoding.DecodeString(device.Config.BinaryData)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "Failed to decode base64 configuration")
+	}
+
+	err = yaml.Unmarshal(yamlBytes, &config)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "Failed to unmarshal yaml configuration")
+	}
+
+	return &config, nil
+}
+
+func serializeConfig(config *DroneConfig) (string, error) {
+	configBytes, err := yaml.Marshal(config)
+	if err != nil {
+		return "", errors.WithMessagef(err, "Could not marshal configuration")
+	}
+
+	return base64.StdEncoding.EncodeToString(configBytes), nil
+}
+
+func defaultConfiguration() *DroneConfig {
+	return &DroneConfig{
+		Profile:             defaultProfile(),
+		InitialWifi:         defaultInitialWifi(),
+		MissionDataRecorder: nil,
+	}
+}
+
+func defaultProfile() *ProfileConfig {
+	return &ProfileConfig{
+		URL:     "",
+		HashSum: "",
+	}
+}
+
+func defaultInitialWifi() *InitialWifiConfig {
+	return &InitialWifiConfig{
+		ApiVersion: 1,
+		SSID:       "gold",
+		Key:        "1234567890",
+		Enc:        "wep",
+		APMAC:      "00:11:22:33:44:55",
+		Country:    "fi",
+		Frequency:  "5220",
+		IP:         "192.168.1.1",
+		Subnet:     "255.255.255.0",
+		TXPower:    "30",
+		Mode:       "mesh",
 	}
 }

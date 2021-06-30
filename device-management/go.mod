@@ -6,6 +6,7 @@ require (
 	cloud.google.com/go v0.75.0 // indirect
 	github.com/eclipse/paho.mqtt.golang v1.3.1
 	github.com/julienschmidt/httprouter v1.3.0
+	github.com/pkg/errors v0.9.1
 	golang.org/x/oauth2 v0.0.0-20210113205817-d3ed898aa8a3 // indirect
 	golang.org/x/sys v0.0.0-20210124154548-22da62e12c0c // indirect
 	google.golang.org/api v0.39.0
