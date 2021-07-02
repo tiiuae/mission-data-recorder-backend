@@ -62,7 +62,7 @@ func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt: expires,
 		}
 	}
-	writeJSON(w, response)
+	writeJSON(w, obj{"simulations": response})
 }
 
 func kubeSimNamespace(namespace string, standalone bool) *v1.Namespace {
@@ -263,10 +263,8 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// request world creation
-	requestBody, err := json.Marshal(struct {
-		WorldFile string `json:"world_file"`
-	}{
-		WorldFile: request.World,
+	requestBody, err := json.Marshal(obj{
+		"world_file": request.World,
 	})
 	if err != nil {
 		panic("Could not marshal body")
@@ -292,7 +290,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Simulation started")
-	writeJSON(w, name)
+	writeJSON(w, obj{"name": name})
 }
 
 func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
@@ -432,7 +430,7 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Timeout while trying to get IP for gzweb", nil, http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, fmt.Sprintf("http://%s/", ip))
+	writeJSON(w, obj{"url": fmt.Sprintf("http://%s/", ip)})
 }
 
 func addDroneHandler(w http.ResponseWriter, r *http.Request) {
