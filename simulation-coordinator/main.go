@@ -29,7 +29,13 @@ func main() {
 
 	router := httprouter.New()
 	registerRoutes(router)
-
+	router.HandleMethodNotAllowed = true
+	router.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeNotFound(w, "not found", nil)
+	})
+	router.MethodNotAllowed = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, "method not allowed", nil, http.StatusMethodNotAllowed)
+	})
 	router.GlobalOPTIONS = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isValidOrigin(r) && r.Header.Get("Access-Control-Request-Method") != "" {
 			// Set CORS headers

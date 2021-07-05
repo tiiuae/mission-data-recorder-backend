@@ -4,7 +4,7 @@ WORKDIR /simulation-coordinator/
 COPY go.mod .
 COPY go.sum .
 RUN go mod download
-COPY *.go ./
+COPY . ./
 RUN GOOS=linux GOARCH=amd64 go build -o simulation-coordinator .
 
 
