@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -314,4 +315,95 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 
 	return nil
 
+}
+
+type CreateDroneOptions struct {
+	DeviceID          string // required
+	PrivateKey        string // required
+	Image             string // required
+	Namespace         string // required
+	MQTTBrokerAddress string // required
+	RTSPServerAddress string // required
+}
+
+func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *CreateDroneOptions) error {
+	name := fmt.Sprintf("drone-%s", opts.DeviceID)
+	droneContainerEnvs := []v1.EnvVar{
+		{
+			Name:  "DRONE_DEVICE_ID",
+			Value: opts.DeviceID,
+		},
+		{
+			Name:  "DRONE_IDENTITY_KEY",
+			Value: opts.PrivateKey,
+		},
+		{
+			Name:  "MQTT_BROKER_ADDRESS",
+			Value: opts.MQTTBrokerAddress,
+		},
+		{
+			Name:  "RTSP_SERVER_ADDRESS",
+			Value: opts.RTSPServerAddress,
+		},
+	}
+
+	droneDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": name,
+				},
+			},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app":             name,
+						"drone-device-id": opts.DeviceID,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:            name,
+							Image:           opts.Image,
+							ImagePullPolicy: v1.PullIfNotPresent,
+							Env:             droneContainerEnvs,
+						},
+					},
+				},
+			},
+		},
+	}
+	droneService := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("%s-svc", name),
+		},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeClusterIP,
+			Ports: []v1.ServicePort{
+				{
+					Name:     "mavlink-udp",
+					Port:     14560,
+					Protocol: "UDP",
+				},
+				{
+					Name:     "gst-cam-udp",
+					Port:     5600,
+					Protocol: "UDP",
+				},
+			},
+			Selector: map[string]string{
+				"app": name,
+			},
+		},
+	}
+	droneDeployment, err := clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	_, err = clientset.CoreV1().Services(opts.Namespace).Create(ctx, droneService, metav1.CreateOptions{})
+	return err
 }

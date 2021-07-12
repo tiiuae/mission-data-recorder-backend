@@ -3,16 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
+	cryptoRand "crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/big"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/julienschmidt/httprouter"
@@ -25,15 +32,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+type simulationType string
+
 const (
-	imageGZServer         = "ghcr.io/tiiuae/tii-gzserver"
-	imageGZWeb            = "ghcr.io/tiiuae/tii-gzweb"
-	imageFogDrone         = "ghcr.io/tiiuae/tii-fog-drone:f4f-int"
-	imageMQTTServer       = "ghcr.io/tiiuae/tii-mqtt-server:latest"
-	imageMissionControl   = "ghcr.io/tiiuae/tii-mission-control:latest"
-	imageVideoServer      = "ghcr.io/tiiuae/tii-video-server:latest"
-	imageVideoMultiplexer = "ghcr.io/tiiuae/tii-video-multiplexer:latest"
-	imageWebBackend       = "ghcr.io/tiiuae/tii-web-backend:latest"
+	simTypeGlobal     simulationType = "global"
+	simTypeStandalone simulationType = "standalone"
 )
 
 var (
@@ -44,6 +47,27 @@ var (
 )
 
 var websocketUpgrader websocket.Upgrader
+
+var errSimDoesNotExist = errors.New("simulation doesn't exist")
+
+func getSimulationType(ctx context.Context, simulationName string) (simulationType, error) {
+	ns, err := getKube().CoreV1().Namespaces().Get(ctx, simulationName, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return "", errSimDoesNotExist
+	} else if err != nil {
+		return "", err
+	}
+	simType := ns.Labels["dronsole-simulation-type"]
+	switch simulationType(simType) {
+	case simTypeGlobal:
+	case simTypeStandalone:
+	case "":
+		return "", errSimDoesNotExist
+	default:
+		return "", errors.New("invalid simulation type: " + simType)
+	}
+	return simulationType(simType), nil
+}
 
 // GET /simulations
 func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +104,15 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(r.Context())
 	simulationName := params.ByName("simulationName")
 
+	simType, err := getSimulationType(r.Context(), simulationName)
+	if err != nil {
+		writeServerError(w, "failed to get simulation type", err)
+		return
+	}
+	if simType == simTypeGlobal {
+		writeJSON(w, obj{"mqtt_server": obj{"url": mqttServerURL}})
+		return
+	}
 	mqttIP, err := waitLoadBalancerIP(r.Context(), simulationName, "mqtt-server-svc")
 	if err != nil {
 		writeServerError(w, "Error getting mqtt server address", err)
@@ -89,16 +122,16 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func kubeSimNamespace(namespace string, standalone bool) *v1.Namespace {
-	simType := "global"
+	simType := simTypeGlobal
 	if standalone {
-		simType = "standalone"
+		simType = simTypeStandalone
 	}
 	return &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: namespace,
 			Labels: map[string]string{
 				"dronsole-type":            "simulation",
-				"dronsole-simulation-type": simType,
+				"dronsole-simulation-type": string(simType),
 			},
 			Annotations: map[string]string{
 				"dronsole-expiration-timestamp": time.Now().Add(2 * time.Hour).Format(time.RFC3339),
@@ -534,96 +567,55 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	switch request.Location {
 	case "cluster":
-		kube := getKube()
-
-		name := fmt.Sprintf("drone-%s", request.DroneID)
-
-		droneContainerEnvs := []v1.EnvVar{
-			{
-				Name:  "DRONE_DEVICE_ID",
-				Value: request.DroneID,
-			},
-			{
-				Name:  "DRONE_IDENTITY_KEY",
-				Value: request.PrivateKey,
-			},
-			{
-				Name:  "MQTT_BROKER_ADDRESS",
-				Value: "tcp://mqtt-server-svc:8883",
-			},
-			{
-				Name:  "RTSP_SERVER_ADDRESS",
-				Value: "DroneUser:22f6c4de-6144-4f6c-82ea-8afcdf19f316@video-server-svc:8554",
-			},
-			{
-				Name:  "MISSION_DATA_RECORDER_BACKEND_URL",
-				Value: "http://mission-data-recorder-backend-svc:9423",
-			},
-		}
-
-		droneDeployment := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: name,
-			},
-			Spec: appsv1.DeploymentSpec{
-				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						"app": name,
-					},
-				},
-				Template: v1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{
-							"app":             name,
-							"drone-device-id": request.DroneID,
-						},
-					},
-					Spec: v1.PodSpec{
-						Containers: []v1.Container{
-							{
-								Name:            name,
-								Image:           imageFogDrone,
-								ImagePullPolicy: v1.PullIfNotPresent,
-								Env:             droneContainerEnvs,
-							},
-						},
-					},
-				},
-			},
-		}
-
-		droneDeployment, err = kube.AppsV1().Deployments(simulationName).Create(c, droneDeployment, metav1.CreateOptions{})
-		if err != nil {
-			writeError(w, "Could not create drone deployment", err, http.StatusInternalServerError)
+		simType, err := getSimulationType(c, simulationName)
+		if errors.Is(err, errSimDoesNotExist) {
+			writeNotFound(w, "simulation doesn't exist", nil)
+			return
+		} else if err != nil {
+			writeServerError(w, "failed to add drone", err)
 			return
 		}
-
-		droneService := &v1.Service{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: fmt.Sprintf("%s-svc", name),
-			},
-			Spec: v1.ServiceSpec{
-				Type: v1.ServiceTypeClusterIP,
-				Ports: []v1.ServicePort{
-					{
-						Name:     "mavlink-udp",
-						Port:     14560,
-						Protocol: "UDP",
-					},
-					{
-						Name:     "gst-cam-udp",
-						Port:     5600,
-						Protocol: "UDP",
-					},
-				},
-				Selector: map[string]string{
-					"app": name,
-				},
-			},
+		opts := &kube.CreateDroneOptions{
+			Image:     imageFogDrone,
+			Namespace: simulationName,
 		}
-		droneService, err = kube.CoreV1().Services(simulationName).Create(c, droneService, metav1.CreateOptions{})
+		switch simType {
+		case simTypeGlobal:
+			if request.PrivateKey == "" {
+				writeBadRequest(w, "identity key is required for non-standalone simulations", nil)
+				return
+			}
+			if request.DroneID == "" {
+				writeBadRequest(w, "drone ID is required for non-standalone simulations", nil)
+				return
+			}
+			opts.MQTTBrokerAddress = mqttServerURL
+			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@" + videoServerHost
+		case simTypeStandalone:
+			if request.PrivateKey == "" {
+				request.PrivateKey, _, err = generateMQTTCertificate()
+				if err != nil {
+					writeBadRequest(w, "Automatically generation of private key failed. Provide it in the request body.", nil)
+					return
+				}
+			}
+			if request.DroneID == "" {
+				request.DroneID, err = generateDroneID(c, simulationName)
+				if err != nil {
+					writeBadRequest(w, "Automatic generation of drone ID failed. Provide a unique id in the request body.", err)
+					return
+				}
+			}
+			opts.MQTTBrokerAddress = "tcp://mqtt-server-svc:8883"
+			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@video-server-svc:8554"
+		default:
+			panic("invalid simulation type: " + simType)
+		}
+		opts.DeviceID = request.DroneID
+		opts.PrivateKey = request.PrivateKey
+		err = kube.CreateDrone(c, getKube(), opts)
 		if err != nil {
-			writeError(w, "Could not create drone service", err, http.StatusInternalServerError)
+			writeError(w, "Could not create drone deployment", err, http.StatusInternalServerError)
 			return
 		}
 		request.MAVLinkAddress = fmt.Sprintf("drone-%s-svc", request.DroneID)
@@ -663,6 +655,132 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, fmt.Sprintf("Could not add drone to gzserver (%d): %v", resp.StatusCode, string(msg)), nil, http.StatusInternalServerError)
 		return
 	}
+	writeJSON(w, obj{"drone_id": request.DroneID})
+}
+
+func generateMQTTCertificate() (privateKey, publicKey string, err error) {
+	priv, err := rsa.GenerateKey(cryptoRand.Reader, 2048)
+	if err != nil {
+		return "", "", fmt.Errorf("could not generate private rsa key: %w", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "unused",
+		},
+	}
+	cert, err := x509.CreateCertificate(cryptoRand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return "", "", fmt.Errorf("could not generate certificate: %w", err)
+	}
+	out := bytes.Buffer{}
+	pem.Encode(&out, &pem.Block{Type: "CERTIFICATE", Bytes: cert})
+	publicKey = out.String()
+	out.Reset()
+	pem.Encode(&out, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	privateKey = out.String()
+	return privateKey, publicKey, nil
+}
+
+var droneIDAlphabet = []string{
+	"alpha",
+	"bravo",
+	"charlie",
+	"delta",
+	"echo",
+	"foxtrot",
+	"golf",
+	"hotel",
+	"india",
+	"juliet",
+	"kilo",
+	"lima",
+	"mike",
+	"november",
+	"oscar",
+	"papa",
+	"quebec",
+	"romeo",
+	"sierra",
+	"tango",
+	"uniform",
+	"victor",
+	"whiskey",
+	"xray",
+	"yankee",
+	"zulu",
+}
+
+func generateDroneID(c context.Context, simulationName string) (string, error) {
+	drones, err := getDrones(c, simulationName)
+	if err != nil {
+		return "", fmt.Errorf("could not get existing drone ids: %w", err)
+	}
+	availableLetters := make([]string, 0)
+	for _, l := range droneIDAlphabet {
+		available := true
+		for _, d := range drones {
+			if strings.HasPrefix(d.DeviceID, l) {
+				available = false
+				break
+			}
+		}
+		if !available {
+			continue
+		}
+		availableLetters = append(availableLetters, l)
+	}
+	if len(availableLetters) != 0 {
+		// still free letters
+		return availableLetters[rand.Intn(len(availableLetters))], nil
+	}
+
+	// no free letters
+	for i := 0; i < 20; i++ {
+		letter := droneIDAlphabet[rand.Intn(len(droneIDAlphabet))]
+
+		id := fmt.Sprintf("%s%s", letter, strings.Split(uuid.New().String(), "-")[3])
+		used := false
+		for _, d := range drones {
+			if d.DeviceID == id {
+				used = true
+				break
+			}
+		}
+		if used {
+			continue
+		}
+		return id, nil
+	}
+
+	return "", errors.New("could not generate unique drone id in 20 tries")
+}
+
+func isDroneIDAvailable(c context.Context, clientset *kubernetes.Clientset, simulationName string, droneID string) bool {
+	drones, err := getDrones(c, simulationName)
+	if err != nil {
+		return false
+	}
+	for _, d := range drones {
+		if d.DeviceID == droneID {
+			return false
+		}
+	}
+	return true
+}
+
+type drone struct {
+	DeviceID      string `json:"device_id"`
+	DroneLocation string `json:"drone_location"`
+}
+
+func getDrones(ctx context.Context, simulationName string) ([]drone, error) {
+	var resp []drone
+	url := fmt.Sprintf("http://gzserver-svc.%s:8081/simulation/drones", simulationName)
+	if err := getJSON(ctx, url, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func waitLoadBalancerIP(c context.Context, namespace string, serviceName string) (string, error) {
@@ -744,12 +862,8 @@ func getDronesHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
 
-	var resp []struct {
-		DeviceID      string `json:"device_id"`
-		DroneLocation string `json:"drone_location"`
-	}
-	url := fmt.Sprintf("http://gzserver-svc.%s:8081/simulation/drones", simulationName)
-	if err := getJSON(c, url, &resp); err != nil {
+	resp, err := getDrones(c, simulationName)
+	if err != nil {
 		writeServerError(w, "could not get list of drones", err)
 		return
 	}
@@ -775,46 +889,27 @@ func commandDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// generate MQTT client
-	// configure MQTT client
-	opts := mqtt.NewClientOptions().
-		AddBroker(fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)).
-		SetClientID("dronsole").
-		SetUsername("dronsole").
-		//SetTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}).
-		SetPassword("").
-		SetProtocolVersion(4) // Use MQTT 3.1.1
-
-	client := mqtt.NewClient(opts)
-
-	tok := client.Connect()
-	if !tok.WaitTimeout(time.Second * 5) {
-		writeServerError(w, "MQTT connection timeout", nil)
+	simType, err := getSimulationType(c, simulationName)
+	if err != nil {
+		writeServerError(w, "failed to get simulation type", err)
 		return
 	}
-	if err := tok.Error(); err != nil {
-		writeServerError(w, "Could not connect to MQTT", err)
+	mqttServer := mqttServerURL
+	if simType == simTypeStandalone {
+		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
+	}
+	client, err := getIotCoreClient(c, mqttServer)
+	if err != nil {
+		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
-	defer client.Disconnect(1000)
-
-	msg, err := json.Marshal(obj{
+	defer client.Close()
+	err = client.SendCommand(c, droneID, "control", obj{
 		"Command":   req.Command,
 		"Timestamp": time.Now(),
 	})
 	if err != nil {
-		writeServerError(w, "Could not marshal command", err)
-		return
-	}
-
-	pubtok := client.Publish(fmt.Sprintf("/devices/%s/commands/control", droneID), 1, false, msg)
-	if !pubtok.WaitTimeout(time.Second * 2) {
-		writeServerError(w, "Publish timeout", nil)
-		return
-	}
-	if err = pubtok.Error(); err != nil {
-		writeServerError(w, "Could not publish command", err)
-		return
+		writeServerError(w, "could not publish command", err)
 	}
 }
 
@@ -846,8 +941,9 @@ func droneLogStreamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
-	c := r.Context()
-	params := httprouter.ParamsFromContext(r.Context())
+	c, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
 
@@ -864,47 +960,38 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 		writeWSError(conn, "failed to read input message", err)
 		return
 	}
+	if req.Path == "" || req.Path[0] != '/' {
+		req.Path = "/" + req.Path
+	}
+	if req.Path[len(req.Path)-1] != '/' {
+		req.Path = req.Path + "/"
+	}
 
-	// generate MQTT client
-	// configure MQTT client
-	opts := mqtt.NewClientOptions().
-		AddBroker(fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)).
-		SetClientID(fmt.Sprintf("dronsole-events-%s", droneID)).
-		SetUsername("dronsole").
-		//SetTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}).
-		SetPassword("").
-		SetProtocolVersion(4) // Use MQTT 3.1.1
-
-	client := mqtt.NewClient(opts)
-
-	tok := client.Connect()
-	if !tok.WaitTimeout(time.Second * 5) {
-		writeWSError(conn, "MQTT connection timeout", nil)
+	simType, err := getSimulationType(c, simulationName)
+	if err != nil {
+		writeServerError(w, "failed to get simulation type", err)
 		return
 	}
-	if err := tok.Error(); err != nil {
-		writeWSError(conn, "Could not connect to MQTT", err)
+	mqttServer := mqttServerURL
+	if simType == simTypeStandalone {
+		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
+	}
+	client, err := getIotCoreClient(c, mqttServer)
+	if err != nil {
+		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
-	defer client.Disconnect(1000)
-
-	c, cancel := context.WithCancel(c)
-	prefix := fmt.Sprintf("/devices/%s/events", droneID)
-	token := client.Subscribe(fmt.Sprintf("/devices/%s/events%s#", droneID, req.Path), 0, func(client mqtt.Client, msg mqtt.Message) {
-		err = conn.WriteJSON(obj{
-			"topic":   strings.TrimPrefix(msg.Topic(), prefix),
-			"message": string(msg.Payload()),
-		})
-		if err != nil {
+	defer client.Close()
+	err = client.Subscribe(c, droneID, req.Path, func(msg *subscriptionMessage) {
+		if err := conn.WriteJSON(msg); err != nil {
 			log.Println("failed to send event:", err)
 			cancel()
 		}
 	})
-	if err := token.Error(); err != nil {
+	if err != nil {
 		writeWSError(conn, "Could not subscribe", err)
 		return
 	}
-	<-c.Done()
 }
 
 func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
@@ -912,54 +999,37 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
 
-	videoServerIP, err := waitLoadBalancerIP(r.Context(), simulationName, "video-server-svc")
+	simType, err := getSimulationType(r.Context(), simulationName)
 	if err != nil {
-		writeServerError(w, "error getting video server address", err)
+		writeServerError(w, "failed to get simulation type", err)
 		return
 	}
-
-	// generate MQTT client
-	// configure MQTT client
-	opts := mqtt.NewClientOptions().
-		AddBroker(fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)).
-		SetClientID("dronsole").
-		SetUsername("dronsole").
-		//SetTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12}).
-		SetPassword("").
-		SetProtocolVersion(4) // Use MQTT 3.1.1
-
-	client := mqtt.NewClient(opts)
-
-	tok := client.Connect()
-	if !tok.WaitTimeout(time.Second * 5) {
-		writeServerError(w, "MQTT connection timeout", err)
+	mqttServer := mqttServerURL
+	videoServer := videoServerHost
+	if simType == simTypeStandalone {
+		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
+		videoServer, err = waitLoadBalancerIP(r.Context(), simulationName, "video-server-svc")
+		if err != nil {
+			writeServerError(w, "error getting video server address", err)
+			return
+		}
+		videoServer += ":8554"
+	}
+	client, err := getIotCoreClient(r.Context(), mqttServer)
+	if err != nil {
+		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
-	if err := tok.Error(); err != nil {
-		writeServerError(w, "Could not connect to MQTT", err)
-		return
-	}
-	defer client.Disconnect(1000)
-
-	msg, err := json.Marshal(obj{
+	defer client.Close()
+	err = client.SendCommand(r.Context(), droneID, "videostream", obj{
 		"Command": "start",
-		"Address": fmt.Sprintf("rtsp://%s:%s@%s:8554/%s", "DroneUser", "22f6c4de-6144-4f6c-82ea-8afcdf19f316", "video-server-svc", droneID),
+		"Address": fmt.Sprintf("rtsp://%s:%s@%s/%s", videoServerUsername, videoServerPassword, videoServer, droneID),
 	})
 	if err != nil {
-		writeServerError(w, "Could not marshal start video command", err)
-		return
-	}
-
-	pubtok := client.Publish(fmt.Sprintf("/devices/%s/commands/videostream", droneID), 1, false, msg)
-	if !pubtok.WaitTimeout(time.Second * 2) {
-		writeServerError(w, "Publish timeout", err)
-		return
-	}
-	if err = pubtok.Error(); err != nil {
-		writeServerError(w, "Could not publish takeoff", err)
+		writeServerError(w, "could not publish command", err)
 		return
 	}
 	writeJSON(w, obj{
-		"video_url": fmt.Sprintf("rtsp://%s:8554/%s", videoServerIP, droneID),
+		"video_url": fmt.Sprintf("rtsp://%s/%s", videoServer, droneID),
 	})
 }

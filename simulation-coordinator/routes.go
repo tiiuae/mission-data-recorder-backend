@@ -27,6 +27,7 @@ func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodDelete, "/simulations/:simulationName/missions/:missionSlug", deleteMissionHandler)
 	router.HandlerFunc(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/drones", assignDroneHandler)
 	router.HandlerFunc(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/backlog", addBacklogItem)
+	router.HandlerFunc(http.MethodGet, "/events/:droneID/*path", eventsHandler)
 	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
 }
 

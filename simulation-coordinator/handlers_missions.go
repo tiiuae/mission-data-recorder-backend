@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var globalMissionsURL *url.URL
@@ -27,21 +25,20 @@ func init() {
 }
 
 func getMissionsURL(ctx context.Context, sim string) (*url.URL, error) {
-	ns, err := getKube().CoreV1().Namespaces().Get(ctx, sim, metav1.GetOptions{})
+	simType, err := getSimulationType(ctx, sim)
 	if err != nil {
 		return nil, err
 	}
-	simType := ns.Labels["dronsole-simulation-type"]
 	switch simType {
-	case "global":
+	case simTypeGlobal:
 		return globalMissionsURL, nil
-	case "standalone":
+	case simTypeStandalone:
 		return &url.URL{
 			Scheme: "http",
 			Host:   "mission-control-svc." + sim + ":8082",
 		}, nil
 	default:
-		return nil, errors.New("invalid simulation type: " + simType)
+		panic("invalid simulation type: " + string(simType))
 	}
 }
 
