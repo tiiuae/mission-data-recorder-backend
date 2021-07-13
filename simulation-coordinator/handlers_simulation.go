@@ -32,13 +32,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-type simulationType string
-
-const (
-	simTypeGlobal     simulationType = "global"
-	simTypeStandalone simulationType = "standalone"
-)
-
 var (
 	imageGPUTag = map[SimulationGPUMode]string{
 		SimulationGPUModeNone:   ":latest",
@@ -50,7 +43,7 @@ var websocketUpgrader websocket.Upgrader
 
 var errSimDoesNotExist = errors.New("simulation doesn't exist")
 
-func getSimulationType(ctx context.Context, simulationName string) (simulationType, error) {
+func getSimulationType(ctx context.Context, simulationName string) (kube.SimulationType, error) {
 	ns, err := getKube().CoreV1().Namespaces().Get(ctx, simulationName, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
 		return "", errSimDoesNotExist
@@ -58,15 +51,15 @@ func getSimulationType(ctx context.Context, simulationName string) (simulationTy
 		return "", err
 	}
 	simType := ns.Labels["dronsole-simulation-type"]
-	switch simulationType(simType) {
-	case simTypeGlobal:
-	case simTypeStandalone:
+	switch kube.SimulationType(simType) {
+	case kube.SimulationGlobal:
+	case kube.SimulationStandalone:
 	case "":
 		return "", errSimDoesNotExist
 	default:
 		return "", errors.New("invalid simulation type: " + simType)
 	}
-	return simulationType(simType), nil
+	return kube.SimulationType(simType), nil
 }
 
 // GET /simulations
@@ -109,7 +102,7 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to get simulation type", err)
 		return
 	}
-	if simType == simTypeGlobal {
+	if simType == kube.SimulationGlobal {
 		writeJSON(w, obj{"mqtt_server": obj{"url": mqttServerURL}})
 		return
 	}
@@ -119,25 +112,6 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, obj{"mqtt_server": obj{"url": "tcp://" + mqttIP + ":8883"}})
-}
-
-func kubeSimNamespace(namespace string, standalone bool) *v1.Namespace {
-	simType := simTypeGlobal
-	if standalone {
-		simType = simTypeStandalone
-	}
-	return &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: namespace,
-			Labels: map[string]string{
-				"dronsole-type":            "simulation",
-				"dronsole-simulation-type": string(simType),
-			},
-			Annotations: map[string]string{
-				"dronsole-expiration-timestamp": time.Now().Add(2 * time.Hour).Format(time.RFC3339),
-			},
-		},
-	}
 }
 
 func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
@@ -225,7 +199,7 @@ func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
 						{
 							Name:            "gazebo-data",
 							Image:           dataImage,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "/gazebo-data/plugins", "/data"},
 							VolumeMounts: []v1.VolumeMount{
 								volumeMountGazeboData,
@@ -236,11 +210,14 @@ func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
 						{
 							Name:            "gzserver",
 							Image:           imageGZServer + imageGPUTag[simulationGPUMode],
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 							Env:             env,
 							VolumeMounts:    volumeMounts,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -292,10 +269,18 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Creating simulation %s with world %s", request.Name, request.World)
 
-	ns := kubeSimNamespace(request.Name, request.Standalone)
-	ns, err = clientset.CoreV1().Namespaces().Create(c, ns, metav1.CreateOptions{})
+	simType := kube.SimulationGlobal
+	if request.Standalone {
+		simType = kube.SimulationStandalone
+	}
+	ns, err := kube.CreateNamespace(c, request.Name, simType, clientset)
 	if err != nil {
 		writeError(w, "Could not create namespace for the simulation", err, http.StatusInternalServerError)
+		return
+	}
+	err = kube.CopySecret(c, currentNamespace, dockerConfigSecretName, ns.Name, "dockerconfigjson", clientset)
+	if err != nil {
+		writeServerError(w, "Could not copy Docker configuration for the simulation", err)
 		return
 	}
 
@@ -459,7 +444,7 @@ func createViewer(c context.Context, namespace string, image string) error {
 						{
 							Name:            "gazebo-data",
 							Image:           dataImage,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "gazebo-data/plugins", "/data"},
 							VolumeMounts: []v1.VolumeMount{
 								{
@@ -474,7 +459,7 @@ func createViewer(c context.Context, namespace string, image string) error {
 							Name:            "gzweb",
 							Image:           image,
 							Args:            []string{"http://gzserver-svc:11345"},
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 							VolumeMounts: []v1.VolumeMount{
 								{
 									MountPath: "/data",
@@ -483,6 +468,9 @@ func createViewer(c context.Context, namespace string, image string) error {
 							},
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -580,7 +568,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			Namespace: simulationName,
 		}
 		switch simType {
-		case simTypeGlobal:
+		case kube.SimulationGlobal:
 			if request.PrivateKey == "" {
 				writeBadRequest(w, "identity key is required for non-standalone simulations", nil)
 				return
@@ -591,7 +579,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			opts.MQTTBrokerAddress = mqttServerURL
 			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@" + videoServerHost
-		case simTypeStandalone:
+		case kube.SimulationStandalone:
 			if request.PrivateKey == "" {
 				request.PrivateKey, _, err = generateMQTTCertificate()
 				if err != nil {
@@ -895,7 +883,7 @@ func commandDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mqttServer := mqttServerURL
-	if simType == simTypeStandalone {
+	if simType == kube.SimulationStandalone {
 		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
 	}
 	client, err := getIotCoreClient(c, mqttServer)
@@ -973,7 +961,7 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mqttServer := mqttServerURL
-	if simType == simTypeStandalone {
+	if simType == kube.SimulationStandalone {
 		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
 	}
 	client, err := getIotCoreClient(c, mqttServer)
@@ -1006,7 +994,7 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	mqttServer := mqttServerURL
 	videoServer := videoServerHost
-	if simType == simTypeStandalone {
+	if simType == kube.SimulationStandalone {
 		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
 		videoServer, err = waitLoadBalancerIP(r.Context(), simulationName, "video-server-svc")
 		if err != nil {

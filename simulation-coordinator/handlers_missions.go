@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
+	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -30,9 +31,9 @@ func getMissionsURL(ctx context.Context, sim string) (*url.URL, error) {
 		return nil, err
 	}
 	switch simType {
-	case simTypeGlobal:
+	case kube.SimulationGlobal:
 		return globalMissionsURL, nil
-	case simTypeStandalone:
+	case kube.SimulationStandalone:
 		return &url.URL{
 			Scheme: "http",
 			Host:   "mission-control-svc." + sim + ":8082",

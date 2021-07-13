@@ -4,12 +4,53 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+type SimulationType string
+
+const (
+	SimulationGlobal     SimulationType = "global"
+	SimulationStandalone SimulationType = "standalone"
+)
+
+func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string, clientset *kubernetes.Clientset) error {
+	secret, err := clientset.CoreV1().Secrets(fromNamespace).Get(ctx, fromName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	secret = &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      toName,
+			Namespace: toNamespace,
+		},
+		Type: secret.Type,
+		Data: secret.Data,
+	}
+	_, err = clientset.CoreV1().Secrets(toNamespace).Create(ctx, secret, metav1.CreateOptions{})
+	return err
+}
+
+func CreateNamespace(ctx context.Context, name string, simType SimulationType, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
+	ns := &v1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"dronsole-type":            "simulation",
+				"dronsole-simulation-type": string(simType),
+			},
+			Annotations: map[string]string{
+				"dronsole-expiration-timestamp": time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+			},
+		},
+	}
+	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+}
 
 func CreateMQTT(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
 
@@ -34,9 +75,12 @@ func CreateMQTT(c context.Context, namespace string, image string, clientset *ku
 						{
 							Name:            "mqtt-server",
 							Image:           image,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -94,9 +138,12 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 							Name:            "mission-control",
 							Image:           image,
 							Args:            []string{"mission-control-svc:2222", "tcp://mqtt-server-svc:8883"},
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -160,9 +207,12 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 						{
 							Name:            "video-server",
 							Image:           image,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -220,9 +270,12 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 							Name:            "video-multiplexer",
 							Image:           image,
 							Args:            []string{"-mqtt", "tcp://mqtt-server-svc:8883", "-rtsp", "video-server-svc:8554", "-test"},
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -280,9 +333,12 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 							Name:            "web-backend",
 							Image:           image,
 							Args:            []string{"tcp://mqtt-server-svc:8883"},
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},
@@ -369,10 +425,13 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 						{
 							Name:            name,
 							Image:           opts.Image,
-							ImagePullPolicy: v1.PullIfNotPresent,
+							ImagePullPolicy: v1.PullAlways,
 							Env:             droneContainerEnvs,
 						},
 					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},

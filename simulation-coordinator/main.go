@@ -39,7 +39,7 @@ var (
 		"iot-device-telemetry-simulation-coordinator",
 	}, ",")
 	eventsAPIURL      = "https://simulation.sacplatform.com"
-	eventsAPIWSURL    = "" // set based on eventsAPIURL
+	eventsAPIWSURL    = "" // Automatically set based on eventsAPIURL
 	enableEventPubsub = false
 )
 
@@ -49,7 +49,16 @@ var (
 	region     = "europe-west1"
 )
 
-var port = 8087
+var (
+	port                   = 8087
+	dockerConfigSecretName = "dockerconfigjson"
+
+	// Read from DOCKERCONFIG_SECRET_NAMESPACE environment variable. This is
+	// passed as an environment variable instead of a command line parameter
+	// because Kubernetes Downwards API does not support command line
+	// parameters.
+	currentNamespace string
+)
 
 func init() {
 	flag.StringVar(&imageGZServer, "image-gzserver", imageGZServer, "Docker image for gazebo server")
@@ -74,6 +83,7 @@ func init() {
 	flag.StringVar(&region, "region", region, "Google Cloud region")
 
 	flag.IntVar(&port, "port", port, "Port to listen to")
+	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the same namespace as the simulation-coordinator pod.")
 }
 
 type SimulationGPUMode int
@@ -111,6 +121,11 @@ func main() {
 	wait := make(chan struct{}, 2)
 
 	eventsAPIWSURL = strings.Replace(eventsAPIURL, "http", "ws", 1)
+
+	currentNamespace = os.Getenv("DOCKERCONFIG_SECRET_NAMESPACE")
+	if currentNamespace == "" {
+		log.Fatalln("Environment variable DOCKERCONFIG_SECRET_NAMESPACE is not defined")
+	}
 
 	if enableEventPubsub {
 		var err error
