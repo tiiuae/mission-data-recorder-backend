@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -9,6 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -17,6 +19,10 @@ type SimulationType string
 const (
 	SimulationGlobal     SimulationType = "global"
 	SimulationStandalone SimulationType = "standalone"
+)
+
+var (
+	ErrNoSuchDrone = errors.New("kube: no such drone")
 )
 
 func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string, clientset *kubernetes.Clientset) error {
@@ -101,7 +107,7 @@ func CreateMQTT(c context.Context, namespace string, image string, clientset *ku
 				Port: 8883,
 			}},
 			Selector: map[string]string{"app": "mqtt-server-pod"},
-			Type:     v1.ServiceTypeLoadBalancer,
+			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -171,7 +177,7 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 				},
 			},
 			Selector: map[string]string{"app": "mission-control-pod"},
-			Type:     v1.ServiceTypeLoadBalancer,
+			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -233,7 +239,7 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 				Port: 8554,
 			}},
 			Selector: map[string]string{"app": "video-server-pod"},
-			Type:     v1.ServiceTypeLoadBalancer,
+			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -296,7 +302,7 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 				Port: 8084,
 			}},
 			Selector: map[string]string{"app": "video-multiplexer-pod"},
-			Type:     v1.ServiceTypeLoadBalancer,
+			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -359,7 +365,7 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 				Port: 8083,
 			}},
 			Selector: map[string]string{"app": "web-backend-pod"},
-			Type:     v1.ServiceTypeLoadBalancer,
+			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
 
@@ -465,4 +471,125 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 	}
 	_, err = clientset.CoreV1().Services(opts.Namespace).Create(ctx, droneService, metav1.CreateOptions{})
 	return err
+}
+
+func GetDronePodName(c context.Context, namespace string, deviceID string, clientset *kubernetes.Clientset) (string, error) {
+	pods, err := clientset.CoreV1().Pods(namespace).List(c, metav1.ListOptions{LabelSelector: "drone-device-id=" + deviceID})
+	if err != nil {
+		return "", err
+	}
+	if len(pods.Items) != 1 {
+		return "", ErrNoSuchDrone
+	}
+	return pods.Items[0].Name, nil
+}
+
+func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube *kubernetes.Clientset) error {
+	_, err := kube.AppsV1().Deployments(namespace).Get(c, "gzweb-dep", metav1.GetOptions{})
+	if err == nil {
+		// the deployment already exists
+		return nil
+	}
+
+	// get gzserver deployment
+	gzserverDep, err := kube.AppsV1().Deployments(namespace).Get(c, "gzserver-dep", metav1.GetOptions{})
+	if err != nil {
+		log.Printf("Unable to get gzserver-dep")
+		return err
+	}
+
+	dataImage := gzserverDep.Spec.Template.Spec.InitContainers[0].Image
+
+	gzwebDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gzweb-dep",
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "gzweb-pod",
+				},
+			},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": "gzweb-pod",
+					},
+				},
+				Spec: v1.PodSpec{
+					Volumes: []v1.Volume{
+						{
+							Name: "gazebo-data-vol",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:            "gazebo-data",
+							Image:           dataImage,
+							ImagePullPolicy: v1.PullAlways,
+							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "gazebo-data/plugins", "/data"},
+							VolumeMounts: []v1.VolumeMount{
+								{
+									MountPath: "/data",
+									Name:      "gazebo-data-vol",
+								},
+							},
+						},
+					},
+					Containers: []v1.Container{
+						{
+							Name:            "gzweb",
+							Image:           image,
+							Args:            []string{"http://gzserver-svc:11345"},
+							ImagePullPolicy: v1.PullAlways,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									MountPath: "/data",
+									Name:      "gazebo-data-vol",
+								},
+							},
+							Env: []v1.EnvVar{{
+								Name:  "SIMULATION_COORDINATOR_URL",
+								Value: simCoordURL,
+							}},
+						},
+					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
+				},
+			},
+		},
+	}
+
+	gzwebDeployment, err = kube.AppsV1().Deployments(namespace).Create(c, gzwebDeployment, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Error creating gzweb deployment %v", err)
+		return err
+	}
+
+	gzwebService := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "gzweb-svc",
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{{
+				Name:       "primary",
+				Port:       80,
+				TargetPort: intstr.FromInt(8080),
+			}},
+			Selector: map[string]string{"app": "gzweb-pod"},
+			Type:     v1.ServiceTypeLoadBalancer,
+		},
+	}
+
+	gzwebService, err = kube.CoreV1().Services(namespace).Create(c, gzwebService, metav1.CreateOptions{})
+	if err != nil {
+		log.Printf("Error creating gzweb service %v", err)
+		return err
+	}
+	return nil
 }

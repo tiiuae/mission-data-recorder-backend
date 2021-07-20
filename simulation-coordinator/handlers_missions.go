@@ -177,7 +177,7 @@ func createMissionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	url := missionsURL.String() + "/missions"
-	if err = postJSON(r.Context(), url, nil, &req); err != nil {
+	if err = postJSON(r.Context(), url, nil, nil, &req); err != nil {
 		writeServerError(w, "failed to create mission", err)
 		return
 	}
@@ -225,7 +225,7 @@ func assignDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	url := missionsURL.String() + "/missions/" + missionSlug + "/drones"
-	if err = postJSON(r.Context(), url, nil, &req); err != nil {
+	if err = postJSON(r.Context(), url, nil, nil, &req); err != nil {
 		writeServerError(w, "failed to assign drone to mission", err)
 		return
 	}
@@ -250,7 +250,7 @@ func addBacklogItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	url := missionsURL.String() + "/missions/" + missionSlug + "/backlog"
-	if err = postJSON(r.Context(), url, nil, &req); err != nil {
+	if err = postJSON(r.Context(), url, nil, nil, &req); err != nil {
 		writeServerError(w, "failed to assign drone to mission", err)
 		return
 	}

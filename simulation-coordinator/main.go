@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/julienschmidt/httprouter"
 )
@@ -83,7 +84,7 @@ func init() {
 	flag.StringVar(&region, "region", region, "Google Cloud region")
 
 	flag.IntVar(&port, "port", port, "Port to listen to")
-	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the same namespace as the simulation-coordinator pod.")
+	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable DOCKERCONFIG_SECRET_NAMESPACE.")
 }
 
 type SimulationGPUMode int
@@ -118,7 +119,7 @@ func main() {
 
 	ctx, cancel := withSignals(context.Background(), os.Interrupt)
 	defer cancel()
-	wait := make(chan struct{}, 2)
+	var wg sync.WaitGroup
 
 	eventsAPIWSURL = strings.Replace(eventsAPIURL, "http", "ws", 1)
 
@@ -133,23 +134,15 @@ func main() {
 		if err != nil {
 			log.Fatalln("failed to start Pub/Sub manager:", err)
 		}
+		wg.Add(1)
 		go func() {
-			defer func() { wait <- struct{}{} }()
-			for ctx.Err() == nil {
-				err := func() (err interface{}) {
 					defer func() {
-						if r := recover(); r != nil {
-							err = r
-						}
+				cancel()
+				wg.Done()
 					}()
-					return subMan.subscribeToPubsub(
-						ctx,
-						strings.Split(pubsubSubscriptions, ","),
-					)
-				}()
+			err := subMan.subscribeToPubsub(ctx, strings.Split(pubsubSubscriptions, ","))
 				if err != nil {
 					log.Println("Pub/Sub manager exited with an error:", err)
-				}
 			}
 		}()
 	}
@@ -181,8 +174,9 @@ func main() {
 		Addr:    ":" + strconv.Itoa(port),
 		Handler: setCORSHeader(router),
 	}
+	wg.Add(1)
 	go func() {
-		defer func() { wait <- struct{}{} }()
+		defer wg.Done()
 		for ctx.Err() == nil {
 			log.Println("listen returned an error:", server.ListenAndServe())
 		}
@@ -191,8 +185,7 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Println("shutdown returned an error:", err)
 	}
-	<-wait
-	<-wait
+	wg.Wait()
 }
 
 func setCORSHeader(handler http.Handler) http.Handler {

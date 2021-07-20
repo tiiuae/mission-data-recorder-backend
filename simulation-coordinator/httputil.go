@@ -25,16 +25,19 @@ func sendReq(ctx context.Context, method, url string, header http.Header, data i
 	return resp, nil
 }
 
-func sendJSON(ctx context.Context, method, url string, out, in interface{}) (err error) {
+func sendJSON(ctx context.Context, method, url string, header http.Header, out, in interface{}) (err error) {
 	var resp *http.Response
+	if header == nil {
+		header = http.Header{}
+	}
 	if in == nil {
-		resp, err = sendReq(ctx, method, url, nil, nil)
+		resp, err = sendReq(ctx, method, url, header, nil)
 	} else {
 		var buf bytes.Buffer
 		if err := json.NewEncoder(&buf).Encode(in); err != nil {
 			return fmt.Errorf("failed to encode payload %w:", err)
 		}
-		header := http.Header{"Content-Type": {"application/json"}}
+		header.Set("Content-Type", "application/json")
 		resp, err = sendReq(ctx, method, url, header, &buf)
 	}
 	if err != nil {
@@ -67,15 +70,15 @@ func sendJSON(ctx context.Context, method, url string, out, in interface{}) (err
 }
 
 func getJSON(ctx context.Context, url string, out interface{}) (err error) {
-	return sendJSON(ctx, "GET", url, out, nil)
+	return sendJSON(ctx, "GET", url, nil, out, nil)
 }
 
-func postJSON(ctx context.Context, url string, out, in interface{}) (err error) {
-	return sendJSON(ctx, "POST", url, out, in)
+func postJSON(ctx context.Context, url string, header http.Header, out, in interface{}) (err error) {
+	return sendJSON(ctx, "POST", url, header, out, in)
 }
 
 func deleteJSON(ctx context.Context, url string, out, in interface{}) (err error) {
-	return sendJSON(ctx, "DELETE", url, out, in)
+	return sendJSON(ctx, "DELETE", url, nil, out, in)
 }
 
 // obj is a shorthand for JSON objects.

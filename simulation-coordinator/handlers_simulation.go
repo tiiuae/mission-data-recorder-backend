@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	cryptoRand "crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"math/big"
@@ -18,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,8 +31,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/kubectl/pkg/scheme"
 )
 
 var (
@@ -288,7 +293,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	gzserverDeployment, err = clientset.AppsV1().Deployments(request.Name).Create(c, gzserverDeployment, metav1.CreateOptions{})
 	if err != nil {
 		writeError(w, "Could not create gzserver deployment", err, http.StatusInternalServerError)
-		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, metav1.NewDeleteOptions(10))
+		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, *metav1.NewDeleteOptions(10))
 		if err != nil {
 			panic(fmt.Sprintf("Unable to delete namespace after gzserver deployment creation failed: %v", err))
 		}
@@ -299,7 +304,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	gzserverService, err = clientset.CoreV1().Services(request.Name).Create(c, gzserverService, metav1.CreateOptions{})
 	if err != nil {
 		writeError(w, "Could not create gzserver service", err, http.StatusInternalServerError)
-		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, metav1.NewDeleteOptions(10))
+		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, *metav1.NewDeleteOptions(10))
 		if err != nil {
 			panic(fmt.Sprintf("Unable to delete namespace after gzserver service creation failed: %v", err))
 		}
@@ -374,7 +379,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, "Could not start simulation on gzserver", err, http.StatusInternalServerError)
-		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, metav1.NewDeleteOptions(10))
+		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, *metav1.NewDeleteOptions(10))
 		if err != nil {
 			panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
 		}
@@ -391,141 +396,76 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	simulationName := params.ByName("simulationName")
 	kube := getKube()
 
-	err := kube.CoreV1().Namespaces().Delete(c, simulationName, metav1.NewDeleteOptions(10))
+	err := kube.CoreV1().Namespaces().Delete(c, simulationName, *metav1.NewDeleteOptions(10))
 	if err != nil {
 		writeError(w, "Could not delete simulation", err, http.StatusInternalServerError)
 		return
 	}
 }
 
-func createViewer(c context.Context, namespace string, image string) error {
-	kube := getKube()
-	_, err := kube.AppsV1().Deployments(namespace).Get(c, "gzweb-dep", metav1.GetOptions{})
-	if err == nil {
-		// the deployment already exists
-		return nil
-	}
-
-	// get gzserver deployment
-	gzserverDep, err := kube.AppsV1().Deployments(namespace).Get(c, "gzserver-dep", metav1.GetOptions{})
-	if err != nil {
-		log.Printf("Unable to get gzserver-dep")
-		return err
-	}
-
-	dataImage := gzserverDep.Spec.Template.Spec.InitContainers[0].Image
-
-	gzwebDeployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gzweb-dep",
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "gzweb-pod",
-				},
-			},
-			Template: v1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": "gzweb-pod",
-					},
-				},
-				Spec: v1.PodSpec{
-					Volumes: []v1.Volume{
-						{
-							Name: "gazebo-data-vol",
-							VolumeSource: v1.VolumeSource{
-								EmptyDir: &v1.EmptyDirVolumeSource{},
-							},
-						},
-					},
-					InitContainers: []v1.Container{
-						{
-							Name:            "gazebo-data",
-							Image:           dataImage,
-							ImagePullPolicy: v1.PullAlways,
-							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "gazebo-data/plugins", "/data"},
-							VolumeMounts: []v1.VolumeMount{
-								{
-									MountPath: "/data",
-									Name:      "gazebo-data-vol",
-								},
-							},
-						},
-					},
-					Containers: []v1.Container{
-						{
-							Name:            "gzweb",
-							Image:           image,
-							Args:            []string{"http://gzserver-svc:11345"},
-							ImagePullPolicy: v1.PullAlways,
-							VolumeMounts: []v1.VolumeMount{
-								{
-									MountPath: "/data",
-									Name:      "gazebo-data-vol",
-								},
-							},
-						},
-					},
-					ImagePullSecrets: []v1.LocalObjectReference{{
-						Name: "dockerconfigjson",
-					}},
-				},
-			},
-		},
-	}
-
-	gzwebDeployment, err = kube.AppsV1().Deployments(namespace).Create(c, gzwebDeployment, metav1.CreateOptions{})
-	if err != nil {
-		log.Printf("Error creating gzweb deployment %v", err)
-		return err
-	}
-
-	gzwebService := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gzweb-svc",
-		},
-		Spec: v1.ServiceSpec{
-			Ports: []v1.ServicePort{{
-				Port:       80,
-				TargetPort: intstr.FromInt(8080),
-			}},
-			Selector: map[string]string{"app": "gzweb-pod"},
-			Type:     "LoadBalancer",
-		},
-	}
-
-	gzwebService, err = kube.CoreV1().Services(namespace).Create(c, gzwebService, metav1.CreateOptions{})
-	if err != nil {
-		log.Printf("Error creating gzweb service %v", err)
-		return err
-	}
-	return nil
-}
+var viewerClients sync.Map // map[string]nil
 
 func startViewerHandler(w http.ResponseWriter, r *http.Request) {
-	c := r.Context()
+	c, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
-
-	err := createViewer(c, simulationName, imageGZWeb+":latest")
+	err := kube.CreateViewer(
+		c,
+		simulationName,
+		imageGZWeb+":latest",
+		"http://simulation-coordinator-svc."+currentNamespace,
+		getKube(),
+	)
 	if err != nil {
 		writeServerError(w, "Unable to create viewer", err)
 		return
 	}
-	waitCtx, cancelWait := context.WithTimeout(c, 10*time.Second)
-	defer cancelWait()
-	ip, err := waitLoadBalancerIP(waitCtx, simulationName, "gzweb-svc")
+	var viewerClientID string
+	for {
+		viewerClientID = uuid.New().String()
+		_, loaded := viewerClients.LoadOrStore(viewerClientID, nil)
+		if !loaded {
+			defer viewerClients.Delete(viewerClientID)
+			break
+		}
+	}
+	conn, err := websocketUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		writeServerError(w, "Unable to get IP for gzweb", err)
+		writeBadRequest(w, "failed to start websocket connection", err)
 		return
 	}
-	if ip == "" {
-		writeServerError(w, "Timeout while trying to get IP for gzweb", nil)
+	defer conn.Close()
+	ip, err := waitLoadBalancerIP(c, simulationName, "gzweb-svc")
+	resp := obj{
+		"id":   viewerClientID,
+		"host": ip,
+	}
+	if err = conn.WriteJSON(resp); err != nil {
+		log.Println(err)
 		return
 	}
-	writeJSON(w, obj{"url": fmt.Sprintf("http://%s/", ip)})
+	go func() {
+		defer func() {
+			cancel()
+			conn.Close()
+		}()
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				log.Println(err)
+				return
+			}
+		}
+	}()
+	<-c.Done()
+	log.Println("viewer client closed")
+}
+
+func validateViewerClientID(w http.ResponseWriter, r *http.Request) {
+	params := httprouter.ParamsFromContext(r.Context())
+	if _, ok := viewerClients.Load(params.ByName("viewerClientID")); !ok {
+		writeError(w, "forbidden", nil, http.StatusForbidden)
+	}
 }
 
 func addDroneHandler(w http.ResponseWriter, r *http.Request) {
@@ -1020,4 +960,159 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, obj{
 		"video_url": fmt.Sprintf("rtsp://%s/%s", videoServer, droneID),
 	})
+}
+
+func droneShellHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	params := httprouter.ParamsFromContext(ctx)
+	simulationName := params.ByName("simulationName")
+	droneID := params.ByName("droneID")
+
+	podName, err := kube.GetDronePodName(ctx, simulationName, droneID, getKube())
+	if errors.Is(err, kube.ErrNoSuchDrone) {
+		writeNotFound(w, "the drone does not exist", nil)
+		return
+	} else if err != nil {
+		writeServerError(w, "could not find pod from cluster", err)
+		return
+	}
+	clientConfig, err := rest.InClusterConfig()
+	if err != nil {
+		writeServerError(w, "failed to get cluster config", err)
+		return
+	}
+	req := getKube().CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(simulationName).
+		SubResource("exec")
+	req.VersionedParams(&v1.PodExecOptions{
+		Command: []string{"bash"},
+		Stdin:   true,
+		Stdout:  true,
+		Stderr:  true,
+		TTY:     true,
+	}, scheme.ParameterCodec)
+	exec, err := remotecommand.NewSPDYExecutor(clientConfig, "POST", req.URL())
+	if err != nil {
+		writeServerError(w, "failed to connect drone", err)
+		return
+	}
+	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		writeBadRequest(w, "failed to upgrade connection to websocket", err)
+		return
+	}
+	defer func() {
+		log.Println("connection closed:", conn.Close())
+	}()
+	sizeQueue := newTerminalSizeQueue()
+	defer sizeQueue.Close()
+	inReader, inWriter := io.Pipe()
+	defer inReader.Close()
+	defer inWriter.Close()
+	outWriter := &ttyWriter{conn: conn}
+	go func() (err error) {
+		defer func() {
+			cancel()
+			if err != nil {
+				log.Println(err)
+			}
+		}()
+		for ctx.Err() == nil {
+			_, reader, err := conn.NextReader()
+			if err != nil {
+				return err
+			}
+			r := bufio.NewReader(reader)
+			msgType, err := r.ReadByte()
+			if err != nil {
+				return err
+			}
+			switch msgType {
+			case 'd': // message contains data from client stdin
+				if _, err = io.Copy(inWriter, r); err != nil {
+					return err
+				}
+			case 's': // message contains terminal size change event
+				var sizeChange remotecommand.TerminalSize
+				if err = json.NewDecoder(r).Decode(&sizeChange); err != nil {
+					return err
+				}
+				sizeQueue.Push(&sizeChange)
+			default: // unknown message type
+				return fmt.Errorf("invalid input message type: %c (%[1]d)", msgType)
+			}
+		}
+		return nil
+	}()
+	go func() {
+		defer cancel()
+		err = exec.Stream(remotecommand.StreamOptions{
+			Stdin:             inReader,
+			Stdout:            outWriter,
+			Stderr:            outWriter,
+			TerminalSizeQueue: sizeQueue,
+			Tty:               true,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("exec stream returned an error: %v", err)
+		}
+	}()
+	<-ctx.Done()
+}
+
+type ttyWriter struct {
+	prefix []byte
+	conn   *websocket.Conn
+	mutex  sync.Mutex
+}
+
+func (w *ttyWriter) Write(p []byte) (int, error) {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+	wr, err := w.conn.NextWriter(websocket.BinaryMessage)
+	if err != nil {
+		return 0, err
+	}
+	defer wr.Close()
+	n, err := wr.Write(w.prefix)
+	if err != nil {
+		return n, err
+	}
+	n2, err := wr.Write(p)
+	return n + n2, err
+}
+
+type terminalSizeQueue struct {
+	closed bool
+	mutex  sync.Mutex
+	ch     chan *remotecommand.TerminalSize
+}
+
+func newTerminalSizeQueue() *terminalSizeQueue {
+	return &terminalSizeQueue{ch: make(chan *remotecommand.TerminalSize)}
+}
+
+func (q *terminalSizeQueue) Push(size *remotecommand.TerminalSize) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	if !q.closed {
+		q.ch <- size
+	}
+}
+
+func (q *terminalSizeQueue) Next() *remotecommand.TerminalSize {
+	return <-q.ch
+}
+
+func (q *terminalSizeQueue) Close() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	if !q.closed {
+		close(q.ch)
+		q.closed = true
+	}
 }
