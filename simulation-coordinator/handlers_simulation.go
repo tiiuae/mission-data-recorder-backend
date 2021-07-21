@@ -297,70 +297,61 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Could not create namespace for the simulation", err, http.StatusInternalServerError)
 		return
 	}
+	creationSucceeded := false
+	var creationError error
+	defer func() {
+		if !creationSucceeded {
+			writeServerError(w, "failed to create simulation", creationError)
+			err := clientset.CoreV1().Namespaces().Delete(context.Background(), request.Name, *metav1.NewDeleteOptions(10))
+			if err != nil {
+				log.Println("Unable to delete namespace:", err)
+			}
+		}
+	}()
 	err = kube.CopySecret(c, currentNamespace, dockerConfigSecretName, ns.Name, "dockerconfigjson", clientset)
 	if err != nil {
-		writeServerError(w, "Could not copy Docker configuration for the simulation", err)
+		creationError = fmt.Errorf("Could not copy Docker configuration for the simulation: %w", err)
 		return
 	}
 
 	gzserverDeployment := kubeSimGZServerDeployment(request.DataImage)
 	gzserverDeployment, err = clientset.AppsV1().Deployments(request.Name).Create(c, gzserverDeployment, metav1.CreateOptions{})
 	if err != nil {
-		writeError(w, "Could not create gzserver deployment", err, http.StatusInternalServerError)
-		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, *metav1.NewDeleteOptions(10))
-		if err != nil {
-			panic(fmt.Sprintf("Unable to delete namespace after gzserver deployment creation failed: %v", err))
-		}
+		creationError = fmt.Errorf("Could not create gzserver deployment: %w", err)
 		return
 	}
 
 	gzserverService := kubeSimGZServerService()
 	gzserverService, err = clientset.CoreV1().Services(request.Name).Create(c, gzserverService, metav1.CreateOptions{})
 	if err != nil {
-		writeError(w, "Could not create gzserver service", err, http.StatusInternalServerError)
-		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, *metav1.NewDeleteOptions(10))
-		if err != nil {
-			panic(fmt.Sprintf("Unable to delete namespace after gzserver service creation failed: %v", err))
-		}
+		creationError = fmt.Errorf("Could not create gzserver service: %w", err)
 		return
 	}
 
 	if request.Standalone {
 		err = kube.CreateMQTT(c, request.Name, imageMQTTServer, clientset)
 		if err != nil {
-			writeServerError(w, "error creating mqtt-server deployment: %w", err)
-			if err != nil {
-				panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
-			}
+			creationError = fmt.Errorf("error creating mqtt-server deployment: %w", err)
 			return
 		}
 		err = kube.CreateMissionControl(c, request.Name, imageMissionControl, clientset)
 		if err != nil {
-			writeServerError(w, "error creating mission-control deployment: %w", err)
-			if err != nil {
-				panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
-			}
+			creationError = fmt.Errorf("error creating mission-control deployment: %w", err)
 			return
 		}
 		err = kube.CreateVideoServer(c, request.Name, imageVideoServer, clientset)
 		if err != nil {
-			writeServerError(w, "error creating video-server deployment: %w", err)
-			if err != nil {
-				panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
-			}
+			creationError = fmt.Errorf("error creating video-server deployment: %w", err)
 			return
 		}
 		err = kube.CreateVideoMultiplexer(c, request.Name, imageVideoMultiplexer, clientset)
 		if err != nil {
-			writeServerError(w, "error creating video-multiplexer deployment: %w", err)
-			if err != nil {
-				panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
-			}
+			creationError = fmt.Errorf("error creating video-multiplexer deployment: %w", err)
 			return
 		}
 		err = kube.CreateWebBackend(c, request.Name, imageWebBackend, clientset)
 		if err != nil {
-			writeServerError(w, "error creating video-multiplexer deployment: %w", err)
+			creationError = fmt.Errorf("error creating web-backend deployment: %w", err)
 			return
 		}
 		opts := &kube.MissionDataRecorderBackendOptions{
@@ -381,7 +372,8 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		err = kube.CreateMissionDataRecorderBackend(c, clientset, opts)
 		if err != nil {
-			panic(fmt.Sprintf("Unable to create mission data recorder backend: %v", err))
+			creationError = fmt.Errorf("error creating mission-data-recorder-backend: %w", err)
+			return
 		}
 	}
 
@@ -390,11 +382,12 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		"world_file": request.World,
 	})
 	if err != nil {
-		panic("Could not marshal body")
+		creationError = errors.New("Could not marshal body")
+		return
 	}
 
 	if err = waitDeploymentAvailable(c, request.Name, "gzserver-dep"); err != nil {
-		writeServerError(w, "failed to wait for gzserver", err)
+		creationError = fmt.Errorf("failed to wait for gzserver: %w", err)
 		return
 	}
 
@@ -409,16 +402,12 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	if err != nil {
-		writeError(w, "Could not start simulation on gzserver", err, http.StatusInternalServerError)
-		err = clientset.CoreV1().Namespaces().Delete(c, request.Name, *metav1.NewDeleteOptions(10))
-		if err != nil {
-			panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
-		}
+		creationError = fmt.Errorf("Could not start simulation on gzserver: %w", err)
 		return
 	}
-
 	log.Printf("Simulation started")
 	writeJSON(w, obj{"name": request.Name})
+	creationSucceeded = true
 }
 
 func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
