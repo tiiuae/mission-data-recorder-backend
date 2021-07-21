@@ -27,10 +27,12 @@ type urlGenerator struct {
 	Account       string
 	SigningKey    []byte
 	ValidDuration time.Duration
+	Prefix        string
 }
 
-func (g *urlGenerator) Generate(object, method string) (string, error) {
-	url, err := storage.SignedURL(g.Bucket, object, &storage.SignedURLOptions{
+func (g *urlGenerator) Generate(deviceID, method string) (string, error) {
+	name := fmt.Sprintf("%s%s/%d", g.Prefix, deviceID, timeNow().Unix())
+	url, err := storage.SignedURL(g.Bucket, name, &storage.SignedURLOptions{
 		GoogleAccessID: g.Account,
 		PrivateKey:     g.SigningKey,
 		Method:         method,
@@ -47,16 +49,18 @@ func configErr(err error) error {
 }
 
 type configuration struct {
-	Bucket           string        `yaml:"bucket"`
-	Account          string        `yaml:"account"`
-	PrivateKeyFile   string        `yaml:"privateKeyFile"`
-	PrivateKey       []byte        `yaml:"-"`
-	JSONCredentials  []byte        `yaml:"-"`
-	URLValidDuration time.Duration `yaml:"urlValidDuration"`
-	Port             int           `yaml:"port"`
-	GCP              gcpConfig     `yaml:"gcp"`
-	LocalDir         string        `yaml:"fileStorageDirectory"`
-	Host             string        `yaml:"host"`
+	Bucket            string        `yaml:"bucket"`
+	Account           string        `yaml:"account"`
+	PrivateKeyFile    string        `yaml:"privateKeyFile"`
+	PrivateKey        []byte        `yaml:"-"`
+	JSONCredentials   []byte        `yaml:"-"`
+	URLValidDuration  time.Duration `yaml:"urlValidDuration"`
+	Port              int           `yaml:"port"`
+	GCP               gcpConfig     `yaml:"gcp"`
+	LocalDir          string        `yaml:"fileStorageDirectory"`
+	Host              string        `yaml:"host"`
+	DataObjectPrefix  string        `yaml:"dataObjectPrefix"`
+	DisableValidation bool          `yaml:"disableValidation"`
 }
 
 var config configuration
@@ -88,16 +92,17 @@ func loadConfig(configPath string) error {
 }
 
 func urlGeneratorFromConfig(config *configuration) *urlGenerator {
-	return &urlGenerator{
+	g := &urlGenerator{
 		Bucket:        config.Bucket,
 		Account:       config.Account,
 		SigningKey:    config.PrivateKey,
 		ValidDuration: config.URLValidDuration,
+		Prefix:        strings.Trim(config.DataObjectPrefix, "/"),
 	}
-}
-
-func newObjectName(deviceID string) string {
-	return fmt.Sprintf("%s/%d", deviceID, timeNow().Unix())
+	if g.Prefix != "" {
+		g.Prefix += "/"
+	}
+	return g
 }
 
 func readAuthJWT(r *http.Request) string {
@@ -113,20 +118,28 @@ func internalServerErr(rw http.ResponseWriter) {
 	writeErrMsg(rw, http.StatusInternalServerError, "something went wrong")
 }
 
-func signedURLGeneratorHandler(gen *urlGenerator, gcp gcpAPI) http.Handler {
+func signedURLGeneratorHandler(gen *urlGenerator, gcp gcpAPI, disableValidation bool) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rawToken := readAuthJWT(r)
 		if rawToken == "" {
 			writeErrMsg(rw, http.StatusUnauthorized, "missing or invalid authorization header")
 			return
 		}
-		deviceID, err := validateJWT(r.Context(), gcp, rawToken)
+		var (
+			deviceID string
+			err      error
+		)
+		if disableValidation {
+			deviceID, err = getDeviceIDWithoutValidation(rawToken)
+		} else {
+			deviceID, err = validateJWT(r.Context(), gcp, rawToken)
+		}
 		if err != nil {
 			log.Println(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
-		signedURL, err := gen.Generate(newObjectName(deviceID), "PUT")
+		signedURL, err := gen.Generate(deviceID, "PUT")
 		if err != nil {
 			log.Println(err)
 			internalServerErr(rw)
@@ -219,7 +232,11 @@ func run() int {
 			log.Println(err)
 			return 1
 		}
-		urlGenHandler = signedURLGeneratorHandler(urlGeneratorFromConfig(&config), &config.GCP)
+		urlGenHandler = signedURLGeneratorHandler(
+			urlGeneratorFromConfig(&config),
+			&config.GCP,
+			config.DisableValidation,
+		)
 	} else {
 		urlGenHandler = localURLGeneratorHandler(config.Host)
 		r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(config.LocalDir))
