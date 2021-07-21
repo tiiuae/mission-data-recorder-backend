@@ -15,10 +15,10 @@ import (
 
 	"cloud.google.com/go/pubsub"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/gorilla/websocket"
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"google.golang.org/api/cloudiot/v1"
+	"nhooyr.io/websocket"
 )
 
 var (
@@ -71,20 +71,14 @@ func (p *cloudiotAPI) Subscribe(ctx context.Context, deviceID, subfolder string,
 	if enableEventPubsub {
 		return subMan.receive(ctx, deviceID, subfolder, callback)
 	}
-	dialer := websocket.Dialer{}
-	conn, _, err := dialer.DialContext(ctx, eventsAPIWSURL+"/events/"+deviceID+subfolder, nil)
+	conn, err := connectWebSocket(ctx, eventsAPIWSURL+"/events/"+deviceID+subfolder)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	go func() {
-		defer conn.Close()
-		<-ctx.Done()
-		conn.WriteControl(websocket.CloseMessage, nil, time.Now().Add(5*time.Second))
-	}()
+	defer conn.Close(websocket.StatusGoingAway, "")
 	for {
 		var msg subscriptionMessage
-		if err = conn.ReadJSON(&msg); err != nil {
+		if err = conn.ReadJSON(ctx, &msg); err != nil {
 			return err
 		}
 		callback(&msg)
@@ -272,22 +266,15 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	droneID := params.ByName("droneID")
 	path := params.ByName("path")
 
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+	conn, err := acceptWebsocket(w, r)
 	if err != nil {
 		writeBadRequest(w, "failed to upgrade connection", err)
 		return
 	}
-	defer conn.Close()
-
+	defer conn.Close(websocket.StatusGoingAway, "")
 	subMan.receive(ctx, droneID, path, func(msg *subscriptionMessage) {
-		if err := conn.WriteJSON(msg); err != nil {
-			if !websocket.IsCloseError(
-				err,
-				websocket.CloseNormalClosure,
-				websocket.CloseGoingAway,
-			) {
-				log.Println(err)
-			}
+		if err := conn.WriteJSON(ctx, msg); err != nil {
+			log.Println(err)
 			cancel()
 		}
 	})

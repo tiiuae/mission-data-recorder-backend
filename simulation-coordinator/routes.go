@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/websocket"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -71,15 +70,6 @@ func writeNotFound(w http.ResponseWriter, message string, err error) {
 
 func writeInvalidJSON(w http.ResponseWriter, err error) {
 	writeBadRequest(w, "request body must be valid JSON", err)
-}
-
-func writeWSError(conn *websocket.Conn, message string, err error) {
-	text := message
-	if err != nil {
-		text = fmt.Sprintf("%s: %v", message, err)
-	}
-	log.Println(text)
-	conn.WriteJSON(obj{"error": text})
 }
 
 func healthz(w http.ResponseWriter, r *http.Request) {

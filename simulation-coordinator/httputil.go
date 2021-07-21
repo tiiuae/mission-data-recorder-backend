@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
+
+	"nhooyr.io/websocket"
 )
 
 func sendReq(ctx context.Context, method, url string, header http.Header, data io.Reader) (*http.Response, error) {
@@ -92,4 +95,47 @@ type apiError struct {
 
 func (e *apiError) Error() string {
 	return e.BodyStr
+}
+
+type websocketConn struct {
+	*websocket.Conn
+}
+
+func connectWebSocket(ctx context.Context, url string) (*websocketConn, error) {
+	c, _, err := websocket.Dial(ctx, url, nil)
+	return &websocketConn{c}, err
+}
+
+func acceptWebsocket(w http.ResponseWriter, r *http.Request) (*websocketConn, error) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	return &websocketConn{conn}, err
+}
+
+func (c *websocketConn) ReadJSON(ctx context.Context, obj interface{}) error {
+	_, r, err := c.Reader(ctx)
+	if err != nil {
+		return err
+	}
+	defer io.Copy(ioutil.Discard, r)
+	return json.NewDecoder(r).Decode(obj)
+}
+
+func (c *websocketConn) WriteJSON(ctx context.Context, obj interface{}) error {
+	w, err := c.Writer(ctx, websocket.MessageText)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	return json.NewEncoder(w).Encode(obj)
+}
+
+func (c *websocketConn) WriteError(ctx context.Context, message string, err error) error {
+	text := message
+	if err != nil {
+		text = fmt.Sprintf("%s: %v", message, err)
+	}
+	log.Println(text)
+	return c.WriteJSON(ctx, obj{"error": text})
 }

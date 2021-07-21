@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	cryptoRand "crypto/rand"
@@ -26,7 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
+	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
 	appsv1 "k8s.io/api/apps/v1"
@@ -37,6 +36,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubectl/pkg/scheme"
+	"nhooyr.io/websocket"
 )
 
 var (
@@ -45,8 +45,6 @@ var (
 		SimulationGPUModeNvidia: ":nvidia",
 	}
 )
-
-var websocketUpgrader websocket.Upgrader
 
 var errSimDoesNotExist = errors.New("simulation doesn't exist")
 
@@ -450,34 +448,22 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+	conn, err := acceptWebsocket(w, r)
 	if err != nil {
 		writeBadRequest(w, "failed to start websocket connection", err)
 		return
 	}
-	defer conn.Close()
+	defer conn.Close(websocket.StatusNormalClosure, "")
 	ip, err := waitLoadBalancerIP(c, simulationName, "gzweb-svc")
 	resp := obj{
 		"id":   viewerClientID,
 		"host": ip,
 	}
-	if err = conn.WriteJSON(resp); err != nil {
+	if err = conn.WriteJSON(c, resp); err != nil {
 		log.Println(err)
 		return
 	}
-	go func() {
-		defer func() {
-			cancel()
-			conn.Close()
-		}()
-		for {
-			if _, _, err := conn.NextReader(); err != nil {
-				log.Println(err)
-				return
-			}
-		}
-	}()
-	<-c.Done()
+	<-conn.CloseRead(c).Done()
 	log.Println("viewer client closed")
 }
 
@@ -913,17 +899,17 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
 
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
+	conn, err := acceptWebsocket(w, r)
 	if err != nil {
 		writeBadRequest(w, "failed to upgrade connection to websocket", err)
 		return
 	}
-	defer conn.Close()
+	defer conn.Close(websocket.StatusNormalClosure, "")
 	var req struct {
 		Path string `json:"path"`
 	}
-	if err = conn.ReadJSON(&req); err != nil {
-		writeWSError(conn, "failed to read input message", err)
+	if err = conn.ReadJSON(c, &req); err != nil {
+		conn.WriteError(c, "failed to read input message", err)
 		return
 	}
 	if req.Path == "" || req.Path[0] != '/' {
@@ -949,13 +935,13 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer client.Close()
 	err = client.Subscribe(c, droneID, req.Path, func(msg *subscriptionMessage) {
-		if err := conn.WriteJSON(msg); err != nil {
+		if err := conn.WriteJSON(c, msg); err != nil {
 			log.Println("failed to send event:", err)
 			cancel()
 		}
 	})
 	if err != nil {
-		writeWSError(conn, "Could not subscribe", err)
+		conn.WriteError(c, "Could not subscribe", err)
 		return
 	}
 }
@@ -1020,10 +1006,46 @@ func droneShellHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to get cluster config", err)
 		return
 	}
+	conn, err := acceptWebsocket(w, r)
+	if err != nil {
+		writeBadRequest(w, "failed to upgrade connection to websocket", err)
+		return
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	shell := newRemoteShell(conn, clientConfig)
+	err = shell.Start(ctx, simulationName, podName)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		conn.WriteError(ctx, "remote shell error", err)
+	}
+}
+
+type remoteShell struct {
+	conn       *websocketConn
+	restConfig *rest.Config
+	inWriter   io.WriteCloser
+	sizeQueue  chan *remotecommand.TerminalSize
+	ctx        context.Context
+}
+
+func newRemoteShell(conn *websocketConn, restConfig *rest.Config) *remoteShell {
+	return &remoteShell{
+		conn:       conn,
+		restConfig: restConfig,
+	}
+}
+
+func (s *remoteShell) Start(ctx context.Context, ns, pod string) (err error) {
+	var cancel context.CancelFunc
+	s.ctx, cancel = context.WithCancel(ctx)
+	defer cancel()
+	var inReader io.ReadCloser
+	inReader, s.inWriter = io.Pipe()
+	defer inReader.Close()
+	defer s.inWriter.Close()
 	req := getKube().CoreV1().RESTClient().Post().
 		Resource("pods").
-		Name(podName).
-		Namespace(simulationName).
+		Name(pod).
+		Namespace(ns).
 		SubResource("exec")
 	req.VersionedParams(&v1.PodExecOptions{
 		Command: []string{"bash"},
@@ -1032,125 +1054,68 @@ func droneShellHandler(w http.ResponseWriter, r *http.Request) {
 		Stderr:  true,
 		TTY:     true,
 	}, scheme.ParameterCodec)
-	exec, err := remotecommand.NewSPDYExecutor(clientConfig, "POST", req.URL())
+	exec, err := remotecommand.NewSPDYExecutor(s.restConfig, "POST", req.URL())
 	if err != nil {
-		writeServerError(w, "failed to connect drone", err)
-		return
+		return err
 	}
-	conn, err := websocketUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		writeBadRequest(w, "failed to upgrade connection to websocket", err)
-		return
-	}
-	defer func() {
-		log.Println("connection closed:", conn.Close())
-	}()
-	sizeQueue := newTerminalSizeQueue()
-	defer sizeQueue.Close()
-	inReader, inWriter := io.Pipe()
-	defer inReader.Close()
-	defer inWriter.Close()
-	outWriter := &ttyWriter{conn: conn}
+	errch := make(chan error, 1)
 	go func() (err error) {
 		defer func() {
 			cancel()
-			if err != nil {
-				log.Println(err)
-			}
+			errch <- err
 		}()
-		for ctx.Err() == nil {
-			_, reader, err := conn.NextReader()
-			if err != nil {
-				return err
-			}
-			r := bufio.NewReader(reader)
-			msgType, err := r.ReadByte()
-			if err != nil {
-				return err
-			}
-			switch msgType {
-			case 'd': // message contains data from client stdin
-				if _, err = io.Copy(inWriter, r); err != nil {
-					return err
-				}
-			case 's': // message contains terminal size change event
-				var sizeChange remotecommand.TerminalSize
-				if err = json.NewDecoder(r).Decode(&sizeChange); err != nil {
-					return err
-				}
-				sizeQueue.Push(&sizeChange)
-			default: // unknown message type
-				return fmt.Errorf("invalid input message type: %c (%[1]d)", msgType)
-			}
-		}
-		return nil
-	}()
-	go func() {
-		defer cancel()
-		err = exec.Stream(remotecommand.StreamOptions{
+		return exec.Stream(remotecommand.StreamOptions{
 			Stdin:             inReader,
-			Stdout:            outWriter,
-			Stderr:            outWriter,
-			TerminalSizeQueue: sizeQueue,
+			Stdout:            s,
+			Stderr:            s,
+			TerminalSizeQueue: s,
 			Tty:               true,
 		})
-		cancel()
-		if err != nil {
-			log.Printf("exec stream returned an error: %v", err)
-		}
 	}()
-	<-ctx.Done()
+	return multierror.Append(s.handleInput(), <-errch).ErrorOrNil()
 }
 
-type ttyWriter struct {
-	prefix []byte
-	conn   *websocket.Conn
-	mutex  sync.Mutex
+func (s *remoteShell) handleInput() error {
+	s.sizeQueue = make(chan *remotecommand.TerminalSize)
+	defer close(s.sizeQueue)
+	for {
+		_, data, err := s.conn.Read(s.ctx)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("invalid message %s", data)
+		}
+		switch data[0] {
+		case 'd': // message contains data from client stdin
+			if _, err = s.inWriter.Write(data[1:]); err != nil {
+				return err
+			}
+		case 's': // message contains terminal size change event
+			var sizeChange remotecommand.TerminalSize
+			if err = json.Unmarshal(data[1:], &sizeChange); err != nil {
+				return err
+			}
+			select {
+			case <-s.ctx.Done():
+				return s.ctx.Err()
+			case s.sizeQueue <- &sizeChange:
+			}
+		default: // unknown message type
+			return fmt.Errorf("invalid input message type: %c (%[1]d)", data[0])
+		}
+	}
 }
 
-func (w *ttyWriter) Write(p []byte) (int, error) {
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-	wr, err := w.conn.NextWriter(websocket.BinaryMessage)
+func (s *remoteShell) Write(p []byte) (int, error) {
+	wr, err := s.conn.Writer(s.ctx, websocket.MessageBinary)
 	if err != nil {
 		return 0, err
 	}
 	defer wr.Close()
-	n, err := wr.Write(w.prefix)
-	if err != nil {
-		return n, err
-	}
-	n2, err := wr.Write(p)
-	return n + n2, err
+	return wr.Write(p)
 }
 
-type terminalSizeQueue struct {
-	closed bool
-	mutex  sync.Mutex
-	ch     chan *remotecommand.TerminalSize
-}
-
-func newTerminalSizeQueue() *terminalSizeQueue {
-	return &terminalSizeQueue{ch: make(chan *remotecommand.TerminalSize)}
-}
-
-func (q *terminalSizeQueue) Push(size *remotecommand.TerminalSize) {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	if !q.closed {
-		q.ch <- size
-	}
-}
-
-func (q *terminalSizeQueue) Next() *remotecommand.TerminalSize {
-	return <-q.ch
-}
-
-func (q *terminalSizeQueue) Close() {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	if !q.closed {
-		close(q.ch)
-		q.closed = true
-	}
+func (s *remoteShell) Next() *remotecommand.TerminalSize {
+	return <-s.sizeQueue
 }
