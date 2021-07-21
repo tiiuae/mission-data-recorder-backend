@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
+	"golang.org/x/oauth2/google"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,7 +45,7 @@ func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toNam
 	return err
 }
 
-func CreateNamespace(ctx context.Context, name string, simType SimulationType, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
+func CreateNamespace(ctx context.Context, name, id string, simType SimulationType, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
 	ns := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -52,6 +55,7 @@ func CreateNamespace(ctx context.Context, name string, simType SimulationType, c
 			},
 			Annotations: map[string]string{
 				"dronsole-expiration-timestamp": time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+				"dronsole-simulation-id":        id,
 			},
 		},
 	}
@@ -379,13 +383,195 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 
 }
 
+type MissionDataRecorderBackendCloudOptions struct {
+	RegistryID       string // required
+	ProjectID        string // required
+	Region           string // required
+	Bucket           string // required
+	JSONKey          string // required
+	DataObjectPrefix string // optional
+}
+
+type MissionDataRecorderBackendOptions struct {
+	Namespace string // required
+	Image     string // required
+
+	// One of the following must be non-empty
+	DataDirectory string
+	Cloud         *MissionDataRecorderBackendCloudOptions
+}
+
+func CreateMissionDataRecorderBackend(ctx context.Context, clientset *kubernetes.Clientset, opts *MissionDataRecorderBackendOptions) error {
+	if (opts.DataDirectory == "" && opts.Cloud == nil) || (opts.DataDirectory != "" && opts.Cloud != nil) {
+		return errors.New("exactly one of opts.DataDirectory and opts.Cloud must be non-empty")
+	}
+	volumeMounts := []v1.VolumeMount{{
+		Name:      "config",
+		MountPath: "/app/config",
+		ReadOnly:  true,
+	}}
+	volumes := []v1.Volume{{
+		Name: "config",
+		VolumeSource: v1.VolumeSource{
+			ConfigMap: &v1.ConfigMapVolumeSource{
+				LocalObjectReference: v1.LocalObjectReference{
+					Name: "mission-data-recorder-backend-config",
+				},
+			},
+		},
+	}}
+	var config *v1.ConfigMap
+	if opts.Cloud == nil {
+		config = &v1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "mission-data-recorder-backend-config"},
+			Data: map[string]string{
+				"config.yaml": `
+port: 9423
+host: http://mission-data-recorder-backend-svc
+fileStorageDirectory: /app/mission-data`,
+			},
+		}
+		volumeMounts = append(volumeMounts, v1.VolumeMount{
+			Name:      "mission-data",
+			MountPath: "/app/mission-data",
+			ReadOnly:  false,
+		})
+		hostPathType := v1.HostPathDirectoryOrCreate
+		volumes = append(volumes, v1.Volume{
+			Name: "mission-data",
+			VolumeSource: v1.VolumeSource{
+				HostPath: &v1.HostPathVolumeSource{
+					Path: opts.DataDirectory,
+					Type: &hostPathType,
+				},
+			},
+		})
+	} else {
+		key, err := google.JWTConfigFromJSON([]byte(opts.Cloud.JSONKey))
+		if err != nil {
+			return err
+		}
+		volumeMounts = append(volumeMounts, v1.VolumeMount{
+			Name:      "secret",
+			ReadOnly:  true,
+			MountPath: "/app/secrets",
+		})
+		volumes = append(volumes, v1.Volume{
+			Name: "secret",
+			VolumeSource: v1.VolumeSource{
+				Secret: &v1.SecretVolumeSource{
+					SecretName: "mission-data-recorder-backend-secret",
+				},
+			},
+		})
+		config = &v1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mission-data-recorder-backend-config",
+				Namespace: opts.Namespace,
+			},
+			Data: map[string]string{
+				"config.yaml": fmt.Sprintf(`
+port: 9423
+host: http://mission-data-recorder-backend-svc
+privateKeyFile: /app/secrets/key.json
+account: %s
+urlValidDuration: 10m
+bucket: %s
+dataObjectPrefix: %s
+disableValidation: true
+gcp:
+  registryId: %s
+  projectId: %s
+  region: %s`,
+					key.Email, opts.Cloud.Bucket, opts.Cloud.DataObjectPrefix,
+					opts.Cloud.RegistryID, opts.Cloud.ProjectID, opts.Cloud.Region,
+				),
+			},
+		}
+		secret := &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mission-data-recorder-backend-secret",
+				Namespace: opts.Namespace,
+			},
+			StringData: map[string]string{
+				"key.json": opts.Cloud.JSONKey,
+			},
+		}
+		_, err = clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+	}
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mission-data-recorder-backend-dep",
+			Namespace: opts.Namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "mission-data-recorder-backend-pod"},
+			},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "mission-data-recorder-backend-pod"},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name:            "mission-data-recorder-backend",
+							Image:           opts.Image,
+							ImagePullPolicy: v1.PullAlways,
+							VolumeMounts:    volumeMounts,
+						},
+					},
+					Volumes: volumes,
+				},
+			},
+		},
+	}
+	service := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mission-data-recorder-backend-svc",
+			Namespace: opts.Namespace,
+		},
+		Spec: v1.ServiceSpec{
+			Selector: map[string]string{"app": "mission-data-recorder-backend-pod"},
+			Ports: []v1.ServicePort{{
+				Name:       "default",
+				Port:       80,
+				TargetPort: intstr.FromInt(9423),
+			}},
+		},
+	}
+	_, err := clientset.CoreV1().ConfigMaps(opts.Namespace).Create(ctx, config, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	_, err = clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	_, err = clientset.CoreV1().Services(opts.Namespace).Create(ctx, service, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+type MissionDataRecordingOptions struct {
+	BackendURL    string   // required
+	SizeThreshold int      // required
+	Topics        []string // required
+}
+
 type CreateDroneOptions struct {
-	DeviceID          string // required
-	PrivateKey        string // required
-	Image             string // required
-	Namespace         string // required
-	MQTTBrokerAddress string // required
-	RTSPServerAddress string // required
+	DeviceID             string                      // required
+	PrivateKey           string                      // required
+	Image                string                      // required
+	Namespace            string                      // required
+	MQTTBrokerAddress    string                      // required
+	RTSPServerAddress    string                      // required
+	MissionDataRecording MissionDataRecordingOptions // required
 }
 
 func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *CreateDroneOptions) error {
@@ -406,6 +592,18 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 		{
 			Name:  "RTSP_SERVER_ADDRESS",
 			Value: opts.RTSPServerAddress,
+		},
+		{
+			Name:  "MISSION_DATA_RECORDER_BACKEND_URL",
+			Value: opts.MissionDataRecording.BackendURL,
+		},
+		{
+			Name:  "MISSION_DATA_RECORDER_SIZE_THRESHOLD",
+			Value: strconv.Itoa(opts.MissionDataRecording.SizeThreshold),
+		},
+		{
+			Name:  "MISSION_DATA_RECORDER_TOPICS",
+			Value: strings.Join(opts.MissionDataRecording.Topics, ","),
 		},
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -15,14 +16,15 @@ import (
 )
 
 var (
-	imageGZServer         = "ghcr.io/tiiuae/tii-gzserver"
-	imageGZWeb            = "ghcr.io/tiiuae/tii-gzweb"
-	imageFogDrone         = "ghcr.io/tiiuae/tii-fog-drone:f4f-int"
-	imageMQTTServer       = "ghcr.io/tiiuae/tii-mqtt-server:latest"
-	imageMissionControl   = "ghcr.io/tiiuae/tii-mission-control:latest"
-	imageVideoServer      = "ghcr.io/tiiuae/tii-video-server:latest"
-	imageVideoMultiplexer = "ghcr.io/tiiuae/tii-video-multiplexer:latest"
-	imageWebBackend       = "ghcr.io/tiiuae/tii-web-backend:latest"
+	imageGZServer                   = "ghcr.io/tiiuae/tii-gzserver"
+	imageGZWeb                      = "ghcr.io/tiiuae/tii-gzweb"
+	imageFogDrone                   = "ghcr.io/tiiuae/tii-fog-drone:latest"
+	imageMQTTServer                 = "ghcr.io/tiiuae/tii-mqtt-server:latest"
+	imageMissionControl             = "ghcr.io/tiiuae/tii-mission-control:latest"
+	imageVideoServer                = "ghcr.io/tiiuae/tii-video-server:latest"
+	imageVideoMultiplexer           = "ghcr.io/tiiuae/tii-video-multiplexer:latest"
+	imageWebBackend                 = "ghcr.io/tiiuae/tii-web-backend:latest"
+	imageMissionDataRecorderBackend = "ghcr.io/tiiuae/tii-mission-data-recorder-backend:latest"
 )
 
 var (
@@ -51,6 +53,13 @@ var (
 )
 
 var (
+	standaloneMissionDataBucket       = "simulation-mission-data"
+	missionDataRecorderBackendKeyPath = "/secrets/mission-data-recorder-backend.json"
+	missionDataRecorderBackendKey     = "" // Read from missionDataRecorderBackendKeyPath
+	storeStandaloneMissionDataLocally = true
+)
+
+var (
 	port                   = 8087
 	dockerConfigSecretName = "dockerconfigjson"
 
@@ -70,6 +79,7 @@ func init() {
 	flag.StringVar(&imageVideoServer, "image-video-server", imageVideoServer, "Docker image for video server")
 	flag.StringVar(&imageVideoMultiplexer, "image-video-multiplexer", imageVideoMultiplexer, "Docker image for video multiplexer")
 	flag.StringVar(&imageWebBackend, "image-web-backend", imageWebBackend, "Docker image for web backend")
+	flag.StringVar(&imageMissionDataRecorderBackend, "image-mission-data-recorder-backend", imageMissionDataRecorderBackend, "Docker image for mission data recorder backend")
 
 	flag.StringVar(&mqttServerURL, "mqtt-server-url", mqttServerURL, "URL of the MQTT server")
 	flag.StringVar(&videoServerHost, "video-server-host", videoServerHost, "Hostname/ip and port of the video server")
@@ -82,6 +92,10 @@ func init() {
 	flag.StringVar(&projectID, "project-id", projectID, "Google Cloud project ID")
 	flag.StringVar(&registryID, "registry-id", registryID, "Google Cloud IoT Core registry ID")
 	flag.StringVar(&region, "region", region, "Google Cloud region")
+
+	flag.StringVar(&standaloneMissionDataBucket, "standalone-mission-data-bucket", standaloneMissionDataBucket, "Name of the bucket where mission data is stored in standalone simulations")
+	flag.StringVar(&missionDataRecorderBackendKeyPath, "mission-data-recorder-backend-key", missionDataRecorderBackendKeyPath, "Path to the JSON key used to upload mission data to buckets")
+	flag.BoolVar(&storeStandaloneMissionDataLocally, "store-standalone-mission-data-locally", storeStandaloneMissionDataLocally, "If true, mission data for standalone simulations is stored in the local file system. If false, it is stored in a Google Cloud Bucket.")
 
 	flag.IntVar(&port, "port", port, "Port to listen to")
 	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable DOCKERCONFIG_SECRET_NAMESPACE.")
@@ -136,15 +150,24 @@ func main() {
 		}
 		wg.Add(1)
 		go func() {
-					defer func() {
+			defer func() {
 				cancel()
 				wg.Done()
-					}()
+			}()
 			err := subMan.subscribeToPubsub(ctx, strings.Split(pubsubSubscriptions, ","))
-				if err != nil {
-					log.Println("Pub/Sub manager exited with an error:", err)
+			if err != nil {
+				log.Println("Pub/Sub manager exited with an error:", err)
 			}
 		}()
+	}
+
+	if !storeStandaloneMissionDataLocally {
+		recorderBackendKey, err := ioutil.ReadFile(missionDataRecorderBackendKeyPath)
+		if err != nil {
+			log.Println("failed to read mission data recorder backend key:", err)
+			return
+		}
+		missionDataRecorderBackendKey = string(recorderBackendKey)
 	}
 
 	router := httprouter.New()

@@ -19,6 +19,8 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,11 @@ var (
 var websocketUpgrader websocket.Upgrader
 
 var errSimDoesNotExist = errors.New("simulation doesn't exist")
+
+const (
+	minDroneRecordSizeThreshold         = 100_000
+	missionDataRecorederBackendCloudURL = "https://mission-data-upload.webapi.sacplatform.com"
+)
 
 func getSimulationType(ctx context.Context, simulationName string) (kube.SimulationType, error) {
 	ns, err := getKube().CoreV1().Namespaces().Get(ctx, simulationName, metav1.GetOptions{})
@@ -256,15 +263,20 @@ func kubeSimGZServerService() *v1.Service {
 func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	var request struct {
-		Name       string `json:"name"`
-		World      string `json:"world"`
-		Standalone bool   `json:"standalone"`
-		DataImage  string `json:"data_image"`
+		Name                 string `json:"name"`
+		World                string `json:"world"`
+		Standalone           bool   `json:"standalone"`
+		DataImage            string `json:"data_image"`
+		MissionDataDirectory string `json:"mission_data_directory"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&request)
 	r.Body.Close()
 	if err != nil {
-		writeError(w, "Could not unmarshal simulation request", err, http.StatusInternalServerError)
+		writeBadRequest(w, "Could not unmarshal simulation request", err)
+		return
+	}
+	if storeStandaloneMissionDataLocally && request.Standalone && request.MissionDataDirectory == "" {
+		writeBadRequest(w, "mission_data_directory must not be empty for standalone simulations", nil)
 		return
 	}
 
@@ -272,13 +284,15 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	if request.Name == "" {
 		request.Name = generateSimulationName(c, clientset)
 	}
+	simulationID := generateSimulationID(request.Name)
+
 	log.Printf("Creating simulation %s with world %s", request.Name, request.World)
 
 	simType := kube.SimulationGlobal
 	if request.Standalone {
 		simType = kube.SimulationStandalone
 	}
-	ns, err := kube.CreateNamespace(c, request.Name, simType, clientset)
+	ns, err := kube.CreateNamespace(c, request.Name, simulationID, simType, clientset)
 	if err != nil {
 		writeError(w, "Could not create namespace for the simulation", err, http.StatusInternalServerError)
 		return
@@ -346,11 +360,28 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		err = kube.CreateWebBackend(c, request.Name, imageWebBackend, clientset)
 		if err != nil {
-			writeServerError(w, "error creating web-backend deployment: %w", err)
-			if err != nil {
-				panic(fmt.Sprintf("Unable to delete namespace after simulation start on gzserver failed: %v", err))
-			}
+			writeServerError(w, "error creating video-multiplexer deployment: %w", err)
 			return
+		}
+		opts := &kube.MissionDataRecorderBackendOptions{
+			Namespace: request.Name,
+			Image:     imageMissionDataRecorderBackend,
+		}
+		if storeStandaloneMissionDataLocally {
+			opts.DataDirectory = filepath.Join(request.MissionDataDirectory, request.Name)
+		} else {
+			opts.Cloud = &kube.MissionDataRecorderBackendCloudOptions{
+				ProjectID:        projectID,
+				RegistryID:       registryID,
+				Region:           region,
+				Bucket:           standaloneMissionDataBucket,
+				JSONKey:          missionDataRecorderBackendKey,
+				DataObjectPrefix: simulationID,
+			}
+		}
+		err = kube.CreateMissionDataRecorderBackend(c, clientset, opts)
+		if err != nil {
+			panic(fmt.Sprintf("Unable to create mission data recorder backend: %v", err))
 		}
 	}
 
@@ -483,6 +514,10 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		Roll       float64 `json:"roll"`
 		Location   string  `json:"location"` // "cluster", "local" or "remote"
 
+		// the following are ignored if Location != "cluster"
+		RecordTopics        []string `json:"record_topics"`
+		RecordSizeThreshold int      `json:"record_size_threshold"`
+
 		// the following are ignored if Location == "cluster"
 		MAVLinkAddress string `json:"mavlink_address"`
 		MAVLinkUDPPort int    `json:"mavlink_udp_port"`
@@ -503,9 +538,17 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			writeServerError(w, "failed to add drone", err)
 			return
 		}
+		if request.RecordSizeThreshold < minDroneRecordSizeThreshold {
+			writeBadRequest(w, "record_size_threshold must be at least "+strconv.Itoa(minDroneRecordSizeThreshold), nil)
+			return
+		}
 		opts := &kube.CreateDroneOptions{
 			Image:     imageFogDrone,
 			Namespace: simulationName,
+			MissionDataRecording: kube.MissionDataRecordingOptions{
+				SizeThreshold: request.RecordSizeThreshold,
+				Topics:        request.RecordTopics,
+			},
 		}
 		switch simType {
 		case kube.SimulationGlobal:
@@ -519,6 +562,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			opts.MQTTBrokerAddress = mqttServerURL
 			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@" + videoServerHost
+			opts.MissionDataRecording.BackendURL = missionDataRecorederBackendCloudURL
 		case kube.SimulationStandalone:
 			if request.PrivateKey == "" {
 				request.PrivateKey, _, err = generateMQTTCertificate()
@@ -536,6 +580,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			opts.MQTTBrokerAddress = "tcp://mqtt-server-svc:8883"
 			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@video-server-svc:8554"
+			opts.MissionDataRecording.BackendURL = "http://mission-data-recorder-backend-svc"
 		default:
 			panic("invalid simulation type: " + simType)
 		}
@@ -783,6 +828,10 @@ func generateSimulationName(c context.Context, kube *kubernetes.Clientset) strin
 	}
 
 	return getShortestUniqueSimulationName(c, kube, names)
+}
+
+func generateSimulationID(name string) string {
+	return name + "-" + time.Now().UTC().Format(time.RFC3339)
 }
 
 func getDronesHandler(w http.ResponseWriter, r *http.Request) {
