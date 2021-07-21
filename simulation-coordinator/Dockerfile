@@ -1,14 +1,12 @@
 FROM golang:latest as builder
-RUN mkdir /simulation-coordinator
-WORKDIR /simulation-coordinator/
-COPY go.mod .
-COPY go.sum .
+WORKDIR /simulation-coordinator
+COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
-RUN GOOS=linux GOARCH=amd64 go build -o simulation-coordinator .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o simulation-coordinator .
 
-
-FROM golang:latest
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /simulation-coordinator/simulation-coordinator /bin/simulation-coordinator
 EXPOSE 8087
 ENTRYPOINT ["/bin/simulation-coordinator"]
