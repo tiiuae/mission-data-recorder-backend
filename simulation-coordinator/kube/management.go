@@ -774,6 +774,9 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 							Env: []v1.EnvVar{{
 								Name:  "SIMULATION_COORDINATOR_URL",
 								Value: simCoordURL,
+							}, {
+								Name:  "ENABLE_AUTHENTICATION",
+								Value: "true",
 							}},
 						},
 					},
