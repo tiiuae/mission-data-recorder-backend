@@ -4,6 +4,7 @@ go 1.14
 
 require (
 	cloud.google.com/go/pubsub v1.3.1
+	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/eclipse/paho.mqtt.golang v1.3.5
 	github.com/google/uuid v1.1.2
 	github.com/hashicorp/go-multierror v1.1.1

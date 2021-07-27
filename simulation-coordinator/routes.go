@@ -11,6 +11,7 @@ import (
 
 func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodGet, "/viewers/:viewerClientID", validateViewerClientID)
+	router.HandlerFunc(http.MethodPost, "/commands", sendCommandHandler)
 	router.HandlerFunc(http.MethodGet, "/simulations", getSimulationsHandler)
 	router.HandlerFunc(http.MethodPost, "/simulations", createSimulationHandler)
 	router.HandlerFunc(http.MethodGet, "/simulations/:simulationName", getSimulationHandler)

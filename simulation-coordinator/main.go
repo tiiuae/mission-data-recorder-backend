@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -30,7 +31,10 @@ var (
 var (
 	mqttServerURL = "ssl://mqtt.googleapis.com:8883"
 
-	videoServerHost     = "video-stream.sacplatform.com:8554"
+	videoServerURL = urlValue{URL: &url.URL{
+		Scheme: "rtsps",
+		Host:   "video-stream.sacplatform.com:8555",
+	}}
 	videoServerUsername = "DroneUser"
 	videoServerPassword = "22f6c4de-6144-4f6c-82ea-8afcdf19f316"
 
@@ -41,9 +45,8 @@ var (
 		"iot-device-location-simulation-coordinator",
 		"iot-device-telemetry-simulation-coordinator",
 	}, ",")
-	eventsAPIURL      = "https://simulation.sacplatform.com"
-	eventsAPIWSURL    = "" // Automatically set based on eventsAPIURL
-	enableEventPubsub = false
+	cloudSimulationCoordinatorURL = "https://simulation.sacplatform.com"
+	cloudMode                     = false
 )
 
 var (
@@ -82,12 +85,12 @@ func init() {
 	flag.StringVar(&imageMissionDataRecorderBackend, "image-mission-data-recorder-backend", imageMissionDataRecorderBackend, "Docker image for mission data recorder backend")
 
 	flag.StringVar(&mqttServerURL, "mqtt-server-url", mqttServerURL, "URL of the MQTT server")
-	flag.StringVar(&videoServerHost, "video-server-host", videoServerHost, "Hostname/ip and port of the video server")
+	flag.Var(&videoServerURL, "video-server-url", "URL of the video server")
 	flag.StringVar(&videoServerUsername, "video-server-username", videoServerUsername, "Username used to log in to the video server")
 	flag.StringVar(&videoServerPassword, "video-server-password", videoServerPassword, "Password used to log in to the video server")
 	flag.StringVar(&pubsubSubscriptions, "events-subscriptions", pubsubSubscriptions, "Comma-separated list of Google Pub/Sub subscriptions to listen for device events.")
-	flag.StringVar(&eventsAPIURL, "events-api-url", eventsAPIURL, "URL of events API")
-	flag.BoolVar(&enableEventPubsub, "events-enable", enableEventPubsub, "If true, subscribes to the Google Pub/Sub subscriptions specified by -events-subscription and provides them in an endpoint. If false, uses mqtt-broker found in local Kubernetes cluster.")
+	flag.StringVar(&cloudSimulationCoordinatorURL, "events-api-url", cloudSimulationCoordinatorURL, "URL of events API")
+	flag.BoolVar(&cloudMode, "cloud-mode", cloudMode, "If true, subscribes to the Google Pub/Sub subscriptions specified by -events-subscription and provides them in an endpoint. If false, uses mqtt-broker found in local Kubernetes cluster.")
 
 	flag.StringVar(&projectID, "project-id", projectID, "Google Cloud project ID")
 	flag.StringVar(&registryID, "registry-id", registryID, "Google Cloud IoT Core registry ID")
@@ -99,6 +102,31 @@ func init() {
 
 	flag.IntVar(&port, "port", port, "Port to listen to")
 	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable DOCKERCONFIG_SECRET_NAMESPACE.")
+}
+
+func urlWithAuth(u url.URL) string {
+	u.User = url.UserPassword(videoServerUsername, videoServerPassword)
+	return u.String()
+}
+
+type urlValue struct {
+	URL *url.URL
+}
+
+func (v urlValue) String() string {
+	if v.URL != nil {
+		return v.URL.String()
+	}
+	return ""
+}
+
+func (v urlValue) Set(s string) error {
+	if u, err := url.Parse(s); err != nil {
+		return err
+	} else {
+		*v.URL = *u
+	}
+	return nil
 }
 
 type SimulationGPUMode int
@@ -135,14 +163,12 @@ func main() {
 	defer cancel()
 	var wg sync.WaitGroup
 
-	eventsAPIWSURL = strings.Replace(eventsAPIURL, "http", "ws", 1)
-
 	currentNamespace = os.Getenv("DOCKERCONFIG_SECRET_NAMESPACE")
 	if currentNamespace == "" {
 		log.Fatalln("Environment variable DOCKERCONFIG_SECRET_NAMESPACE is not defined")
 	}
 
-	if enableEventPubsub {
+	if cloudMode {
 		var err error
 		subMan, err = newSubscriptionManager(ctx)
 		if err != nil {

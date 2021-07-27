@@ -14,16 +14,17 @@ import (
 	"time"
 
 	"cloud.google.com/go/pubsub"
+	"github.com/dgrijalva/jwt-go"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"google.golang.org/api/cloudiot/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"nhooyr.io/websocket"
 )
 
 var (
-	cloudiotAPIClient      cloudiotAPI
-	cloudiotAPIClientMutex sync.RWMutex
+	cloudiotAPIClient cloudiotAPI
 
 	subMan *subscriptionManager
 )
@@ -37,22 +38,125 @@ type subscriptionCallback = func(*subscriptionMessage)
 
 type iotCoreAPI interface {
 	io.Closer
-	SendCommand(ctx context.Context, deviceID, subfolder string, message interface{}) error
+	SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error
 	Subscribe(ctx context.Context, deviceID, subfolder string, callback subscriptionCallback) error
 }
 
 type cloudiotAPI struct {
 	iotClient *cloudiot.Service
+	mutex     sync.RWMutex
+}
+
+func (p *cloudiotAPI) getIOTClient(ctx context.Context) (*cloudiot.Service, error) {
+	p.mutex.RLock()
+	if p.iotClient == nil {
+		p.mutex.RUnlock()
+		p.mutex.Lock()
+		defer p.mutex.Unlock()
+		if p.iotClient == nil {
+			var err error
+			p.iotClient, err = cloudiot.NewService(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		defer p.mutex.RUnlock()
+	}
+	return p.iotClient, nil
+}
+
+func parsePublicKey(
+	rawkey *cloudiot.PublicKeyCredential,
+) (key interface{}, alg string, err error) {
+	switch rawkey.Format {
+	case "RSA_X509_PEM":
+		key, err := jwt.ParseRSAPublicKeyFromPEM([]byte(rawkey.Key))
+		return key, "RS256", err
+	case "ES256_X509_PEM":
+		key, err := jwt.ParseECPublicKeyFromPEM([]byte(rawkey.Key))
+		return key, "ES256", err
+	default:
+		return nil, "", errors.New("unsupported format: " + rawkey.Format)
+	}
+}
+
+func validateDeviceCredential(
+	cred *cloudiot.DeviceCredential,
+	keyAlgorithm string,
+) (pubKey interface{}, err error) {
+	expires, err := time.Parse(time.RFC3339, cred.ExpirationTime)
+	if err != nil {
+		return nil, errors.New("expiry time is invalid: " + cred.ExpirationTime)
+	}
+	// A non-expiring credential has an expiry time equal to Unix zero time.
+	if expires.Unix() != 0 && time.Now().After(expires) {
+		return nil, errors.New("expired at " + expires.String())
+	}
+	pubKey, alg, err := parsePublicKey(cred.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+	if alg != keyAlgorithm {
+		return nil, nil
+	}
+	return pubKey, nil
+}
+
+type deviceIDJWTClaim struct {
+	jwt.StandardClaims
+	DeviceID string `json:"device_id"`
+}
+
+func (p *cloudiotAPI) GetDeviceCredentials(ctx context.Context, deviceID, alg string) (interface{}, error) {
+	iot, err := p.getIOTClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	device, err := iot.Projects.Locations.Registries.Devices.Get(
+		fmt.Sprintf(
+			"projects/%s/locations/%s/registries/%s/devices/%s",
+			projectID, region, registryID, deviceID,
+		),
+	).Context(ctx).FieldMask("credentials").Do()
+	if err != nil {
+		return nil, err
+	}
+	for _, cred := range device.Credentials {
+		key, err := validateDeviceCredential(cred, alg)
+		if key != nil {
+			return key, nil
+		} else if err != nil {
+			log.Printf("error while validating credential for device '%s': %v", deviceID, err)
+		}
+	}
+	return nil, fmt.Errorf("device '%s has no key with algorithm %s", deviceID, alg)
 }
 
 func (p *cloudiotAPI) Close() error {
 	return nil
 }
 
-func (p *cloudiotAPI) SendCommand(ctx context.Context, deviceID, subfolder string, message interface{}) error {
+func (p *cloudiotAPI) SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error {
 	msg, err := json.Marshal(message)
 	if err != nil {
 		return err
+	}
+	if !cloudMode {
+		secret, err := getKube().CoreV1().Secrets(simulation).Get(ctx, "drone-"+deviceID+"-secret", metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		signedToken, err := signDroneJWT(deviceID, secret.Data["DRONE_IDENTITY_KEY"])
+		if err != nil {
+			return err
+		}
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+signedToken)
+		return postJSON(ctx, cloudSimulationCoordinatorURL+"/commands", header, nil, obj{
+			"subfolder": subfolder,
+			"message":   string(msg),
+		})
 	}
 	req := cloudiot.SendCommandToDeviceRequest{
 		BinaryData: base64.StdEncoding.EncodeToString(msg),
@@ -62,16 +166,20 @@ func (p *cloudiotAPI) SendCommand(ctx context.Context, deviceID, subfolder strin
 		"projects/%s/locations/%s/registries/%s/devices/%s",
 		projectID, region, registryID, deviceID,
 	)
-	_, err = p.iotClient.Projects.Locations.Registries.Devices.
+	iot, err := p.getIOTClient(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = iot.Projects.Locations.Registries.Devices.
 		SendCommandToDevice(name, &req).Context(ctx).Do()
 	return err
 }
 
 func (p *cloudiotAPI) Subscribe(ctx context.Context, deviceID, subfolder string, callback subscriptionCallback) error {
-	if enableEventPubsub {
+	if cloudMode {
 		return subMan.receive(ctx, deviceID, subfolder, callback)
 	}
-	conn, err := connectWebSocket(ctx, eventsAPIWSURL+"/events/"+deviceID+subfolder)
+	conn, err := connectWebSocket(ctx, cloudSimulationCoordinatorURL+"/events/"+deviceID+subfolder)
 	if err != nil {
 		return err
 	}
@@ -189,7 +297,7 @@ func (p *mqttPublisher) Close() error {
 	return nil
 }
 
-func (p *mqttPublisher) SendCommand(ctx context.Context, deviceID, subfolder string, message interface{}) error {
+func (p *mqttPublisher) SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error {
 	msg, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -223,20 +331,6 @@ func (p *mqttPublisher) Subscribe(ctx context.Context, deviceID, subfolder strin
 
 func getIotCoreClient(ctx context.Context, server string) (p iotCoreAPI, err error) {
 	if server == mqttServerURL {
-		cloudiotAPIClientMutex.RLock()
-		if cloudiotAPIClient.iotClient == nil {
-			cloudiotAPIClientMutex.RUnlock()
-			cloudiotAPIClientMutex.Lock()
-			defer cloudiotAPIClientMutex.Unlock()
-			if cloudiotAPIClient.iotClient == nil {
-				cloudiotAPIClient.iotClient, err = cloudiot.NewService(context.Background())
-				if err != nil {
-					return nil, err
-				}
-			}
-		} else {
-			defer cloudiotAPIClientMutex.RUnlock()
-		}
 		return &cloudiotAPIClient, nil
 	}
 	opts := mqtt.NewClientOptions().
@@ -278,4 +372,65 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 			cancel()
 		}
 	})
+}
+
+func signDroneJWT(deviceID string, privateKey []byte) (string, error) {
+	key, err := jwt.ParseRSAPrivateKeyFromPEM(privateKey)
+	if err != nil {
+		return "", err
+	}
+	t := time.Now()
+	return jwt.NewWithClaims(jwt.GetSigningMethod("RS256"), &deviceIDJWTClaim{
+		StandardClaims: jwt.StandardClaims{
+			IssuedAt:  t.Unix(),
+			ExpiresAt: t.Add(24 * time.Hour).Unix(),
+			Audience:  projectID,
+		},
+		DeviceID: deviceID,
+	}).SignedString(key)
+}
+
+type jsonString string
+
+func (s jsonString) MarshalJSON() ([]byte, error) {
+	return []byte(s), nil
+}
+
+func sendCommandHandler(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	var req struct {
+		Subfolder string `json:"subfolder"`
+		Message   string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "body must be valid JSON", err)
+		return
+	}
+	var deviceID string
+	_, err := jwt.ParseWithClaims(token, &deviceIDJWTClaim{}, func(t *jwt.Token) (interface{}, error) {
+		deviceID = t.Claims.(*deviceIDJWTClaim).DeviceID
+		return cloudiotAPIClient.GetDeviceCredentials(r.Context(), deviceID, t.Method.Alg())
+	})
+	if err != nil {
+		writeBadRequest(w, "invalid JWT", err)
+		return
+	}
+	switch req.Subfolder {
+	case "videostream", "control":
+	default:
+		writeBadRequest(w, "subfolder '"+req.Subfolder+"' is not allowed", nil)
+		return
+	}
+	err = cloudiotAPIClient.SendCommand(
+		r.Context(),
+		"",
+		deviceID,
+		req.Subfolder,
+		jsonString(req.Message),
+	)
+	if err != nil {
+		writeServerError(w, "failed to send command", err)
+		return
+	}
+	writeJSON(w, obj{})
 }

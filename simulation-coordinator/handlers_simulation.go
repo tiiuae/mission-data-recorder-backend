@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -536,7 +537,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			opts.MQTTBrokerAddress = mqttServerURL
-			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@" + videoServerHost
+			opts.RTSPServerAddress = urlWithAuth(*videoServerURL.URL)
 			opts.MissionDataRecording.BackendURL = missionDataRecorederBackendCloudURL
 		case kube.SimulationStandalone:
 			if request.PrivateKey == "" {
@@ -554,7 +555,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			opts.MQTTBrokerAddress = "tcp://mqtt-server-svc:8883"
-			opts.RTSPServerAddress = videoServerUsername + ":" + videoServerPassword + "@video-server-svc:8554"
+			opts.RTSPServerAddress = "rtsp://" + videoServerUsername + ":" + videoServerPassword + "@video-server-svc:8554"
 			opts.MissionDataRecording.BackendURL = "http://mission-data-recorder-backend-svc"
 		default:
 			panic("invalid simulation type: " + simType)
@@ -856,7 +857,7 @@ func commandDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer client.Close()
-	err = client.SendCommand(c, droneID, "control", obj{
+	err = client.SendCommand(c, simulationName, droneID, "control", obj{
 		"Command":   req.Command,
 		"Timestamp": time.Now(),
 	})
@@ -947,43 +948,47 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
-	params := httprouter.ParamsFromContext(r.Context())
+	ctx := r.Context()
+	params := httprouter.ParamsFromContext(ctx)
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
 
-	simType, err := getSimulationType(r.Context(), simulationName)
+	simType, err := getSimulationType(ctx, simulationName)
 	if err != nil {
 		writeServerError(w, "failed to get simulation type", err)
 		return
 	}
 	mqttServer := mqttServerURL
-	videoServer := videoServerHost
+	videoServer := *videoServerURL.URL
 	if simType == kube.SimulationStandalone {
 		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
-		videoServer, err = waitLoadBalancerIP(r.Context(), simulationName, "video-server-svc")
+		videoServer = url.URL{Scheme: "rtsp"}
+		videoServer.Host, err = waitLoadBalancerIP(ctx, simulationName, "video-server-svc")
 		if err != nil {
 			writeServerError(w, "error getting video server address", err)
 			return
 		}
-		videoServer += ":8554"
+		videoServer.Host += ":8554"
 	}
-	client, err := getIotCoreClient(r.Context(), mqttServer)
+	videoServer.Path = "/" + droneID
+
+	client, err := getIotCoreClient(ctx, mqttServer)
 	if err != nil {
 		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
 	defer client.Close()
-	err = client.SendCommand(r.Context(), droneID, "videostream", obj{
+	err = client.SendCommand(ctx, simulationName, droneID, "videostream", obj{
 		"Command": "start",
-		"Address": fmt.Sprintf("rtsp://%s:%s@%s/%s", videoServerUsername, videoServerPassword, videoServer, droneID),
+		"Address": urlWithAuth(videoServer),
 	})
 	if err != nil {
 		writeServerError(w, "could not publish command", err)
 		return
 	}
-	writeJSON(w, obj{
-		"video_url": fmt.Sprintf("rtsp://%s/%s", videoServer, droneID),
-	})
+	videoServer.Scheme = "rtsp"
+	videoServer.Host = videoServer.Hostname() + ":8554"
+	writeJSON(w, obj{"video_url": videoServer.String()})
 }
 
 func droneShellHandler(w http.ResponseWriter, r *http.Request) {

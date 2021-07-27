@@ -243,7 +243,7 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 				Port: 8554,
 			}},
 			Selector: map[string]string{"app": "video-server-pod"},
-			Type:     v1.ServiceTypeClusterIP,
+			Type:     v1.ServiceTypeLoadBalancer,
 		},
 	}
 
@@ -575,15 +575,33 @@ type CreateDroneOptions struct {
 }
 
 func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *CreateDroneOptions) error {
+	false := false
 	name := fmt.Sprintf("drone-%s", opts.DeviceID)
+	droneSecret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name + "-secret",
+			Namespace: opts.Namespace,
+		},
+		StringData: map[string]string{
+			"DRONE_IDENTITY_KEY": opts.PrivateKey,
+		},
+	}
 	droneContainerEnvs := []v1.EnvVar{
 		{
 			Name:  "DRONE_DEVICE_ID",
 			Value: opts.DeviceID,
 		},
 		{
-			Name:  "DRONE_IDENTITY_KEY",
-			Value: opts.PrivateKey,
+			Name: "DRONE_IDENTITY_KEY",
+			ValueFrom: &v1.EnvVarSource{
+				SecretKeyRef: &v1.SecretKeySelector{
+					LocalObjectReference: v1.LocalObjectReference{
+						Name: droneSecret.ObjectMeta.Name,
+					},
+					Key:      "DRONE_IDENTITY_KEY",
+					Optional: &false,
+				},
+			},
 		},
 		{
 			Name:  "MQTT_BROKER_ADDRESS",
@@ -663,7 +681,11 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 			},
 		},
 	}
-	droneDeployment, err := clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
+	_, err := clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, droneSecret, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	droneDeployment, err = clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
