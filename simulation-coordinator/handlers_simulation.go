@@ -301,7 +301,9 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if !creationSucceeded {
 			writeServerError(w, "failed to create simulation", creationError)
-			err := clientset.CoreV1().Namespaces().Delete(context.Background(), request.Name, *metav1.NewDeleteOptions(10))
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			err := clientset.CoreV1().Namespaces().Delete(ctx, request.Name, *metav1.NewDeleteOptions(10))
 			if err != nil {
 				log.Println("Unable to delete namespace:", err)
 			}
@@ -480,17 +482,17 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
 	var request struct {
-		DroneID    string  `json:"drone_id"`
-		PrivateKey string  `json:"private_key"` // ignored if Location != "cluster"
-		PosX       float64 `json:"pos_x"`
-		PosY       float64 `json:"pos_y"`
-		PosZ       float64 `json:"pos_z"`
-		Yaw        float64 `json:"yaw"`
-		Pitch      float64 `json:"pitch"`
-		Roll       float64 `json:"roll"`
-		Location   string  `json:"location"` // "cluster", "local" or "remote"
+		DroneID  string  `json:"drone_id"`
+		PosX     float64 `json:"pos_x"`
+		PosY     float64 `json:"pos_y"`
+		PosZ     float64 `json:"pos_z"`
+		Yaw      float64 `json:"yaw"`
+		Pitch    float64 `json:"pitch"`
+		Roll     float64 `json:"roll"`
+		Location string  `json:"location"` // "cluster", "local" or "remote"
 
 		// the following are ignored if Location != "cluster"
+		PrivateKey          string   `json:"private_key"`
 		RecordTopics        []string `json:"record_topics"`
 		RecordSizeThreshold int      `json:"record_size_threshold"`
 
@@ -504,6 +506,17 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Could not unmarshal simulation request", err, http.StatusInternalServerError)
 		return
 	}
+	creationSucceeded := false
+	defer func() {
+		if !creationSucceeded {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			err := kube.DeleteDrone(ctx, simulationName, request.DroneID, getKube())
+			if err != nil {
+				log.Println("Unable to delete drone:", err)
+			}
+		}
+	}()
 	switch request.Location {
 	case "cluster":
 		simType, err := getSimulationType(c, simulationName)
@@ -543,14 +556,14 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			if request.PrivateKey == "" {
 				request.PrivateKey, _, err = generateMQTTCertificate()
 				if err != nil {
-					writeBadRequest(w, "Automatically generation of private key failed. Provide it in the request body.", nil)
+					writeBadRequest(w, "Automatic generation of private key failed. Provide it in the request body.", nil)
 					return
 				}
 			}
 			if request.DroneID == "" {
 				request.DroneID, err = generateDroneID(c, simulationName)
 				if err != nil {
-					writeBadRequest(w, "Automatic generation of drone ID failed. Provide a unique id in the request body.", err)
+					writeBadRequest(w, "Automatic generation of drone ID failed. Provide a unique ID in the request body.", err)
 					return
 				}
 			}
@@ -564,7 +577,10 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		opts.PrivateKey = request.PrivateKey
 		err = kube.CreateDrone(c, getKube(), opts)
 		if err != nil {
-			writeError(w, "Could not create drone deployment", err, http.StatusInternalServerError)
+			if errors.Is(err, kube.ErrDroneExists) {
+				creationSucceeded = true
+			}
+			writeServerError(w, "failed to add drone", err)
 			return
 		}
 		request.MAVLinkAddress = fmt.Sprintf("drone-%s-svc", request.DroneID)
@@ -588,23 +604,25 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		"roll":             request.Roll,
 	})
 	if err != nil {
-		panic(err)
+		writeServerError(w, "failed to add drone", err)
+		return
 	}
 
 	droneURL := fmt.Sprintf("http://gzserver-svc.%s:8081/simulation/drones", simulationName)
 	resp, err := http.Post(droneURL, "application/json", bytes.NewBuffer(requestBody))
 	if err != nil {
-		writeError(w, "Could not add drone to gzserver", err, http.StatusInternalServerError)
+		writeServerError(w, "Could not add drone to gzserver", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := ioutil.ReadAll(resp.Body)
-		writeError(w, fmt.Sprintf("Could not add drone to gzserver (%d): %v", resp.StatusCode, string(msg)), nil, http.StatusInternalServerError)
+		writeServerError(w, fmt.Sprintf("Could not add drone to gzserver (%d): %s", resp.StatusCode, msg), nil)
 		return
 	}
 	writeJSON(w, obj{"drone_id": request.DroneID})
+	creationSucceeded = true
 }
 
 func generateMQTTCertificate() (privateKey, publicKey string, err error) {

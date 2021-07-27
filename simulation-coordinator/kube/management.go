@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"golang.org/x/oauth2/google"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -26,6 +28,7 @@ const (
 
 var (
 	ErrNoSuchDrone = errors.New("kube: no such drone")
+	ErrDroneExists = errors.New("drone already exists")
 )
 
 func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string, clientset *kubernetes.Clientset) error {
@@ -682,15 +685,42 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 		},
 	}
 	_, err := clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, droneSecret, metav1.CreateOptions{})
-	if err != nil {
+	if k8serrors.IsAlreadyExists(err) {
+		return ErrDroneExists
+	} else if err != nil {
 		return err
 	}
 	droneDeployment, err = clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
-	if err != nil {
+	if k8serrors.IsAlreadyExists(err) {
+		return ErrDroneExists
+	} else if err != nil {
 		return err
 	}
 	_, err = clientset.CoreV1().Services(opts.Namespace).Create(ctx, droneService, metav1.CreateOptions{})
+	if k8serrors.IsAlreadyExists(err) {
+		return ErrDroneExists
+	}
 	return err
+}
+
+func DeleteDrone(ctx context.Context, namespace, deviceID string, clientset *kubernetes.Clientset) error {
+	name := "drone-" + deviceID
+	gracePeriod := int64(5)
+	opts := metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod}
+	var errs *multierror.Error
+	err := clientset.AppsV1().Deployments(namespace).Delete(ctx, name, opts)
+	if !k8serrors.IsNotFound(err) {
+		errs = multierror.Append(errs, err)
+	}
+	err = clientset.CoreV1().Services(namespace).Delete(ctx, name+"-svc", opts)
+	if !k8serrors.IsNotFound(err) {
+		errs = multierror.Append(errs, err)
+	}
+	err = clientset.CoreV1().Secrets(namespace).Delete(ctx, name+"-secret", opts)
+	if !k8serrors.IsNotFound(err) {
+		errs = multierror.Append(errs, err)
+	}
+	return errs.ErrorOrNil()
 }
 
 func GetDronePodName(c context.Context, namespace string, deviceID string, clientset *kubernetes.Clientset) (string, error) {
