@@ -39,7 +39,7 @@ type subscriptionCallback = func(*subscriptionMessage)
 type iotCoreAPI interface {
 	io.Closer
 	SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error
-	Subscribe(ctx context.Context, deviceID, subfolder string, callback subscriptionCallback) error
+	Subscribe(ctx context.Context, simulation, deviceID, subfolder string, callback subscriptionCallback) error
 }
 
 type cloudiotAPI struct {
@@ -133,6 +133,20 @@ func (p *cloudiotAPI) GetDeviceCredentials(ctx context.Context, deviceID, alg st
 	return nil, fmt.Errorf("device '%s has no key with algorithm %s", deviceID, alg)
 }
 
+func newDroneTokenHeader(ctx context.Context, simulation, deviceID string) (http.Header, error) {
+	secret, err := getKube().CoreV1().Secrets(simulation).Get(ctx, "drone-"+deviceID+"-secret", metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	signedToken, err := signDroneJWT(deviceID, secret.Data["DRONE_IDENTITY_KEY"])
+	if err != nil {
+		return nil, err
+	}
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+signedToken)
+	return header, nil
+}
+
 func (p *cloudiotAPI) Close() error {
 	return nil
 }
@@ -143,16 +157,10 @@ func (p *cloudiotAPI) SendCommand(ctx context.Context, simulation, deviceID, sub
 		return err
 	}
 	if !cloudMode {
-		secret, err := getKube().CoreV1().Secrets(simulation).Get(ctx, "drone-"+deviceID+"-secret", metav1.GetOptions{})
+		header, err := newDroneTokenHeader(ctx, simulation, deviceID)
 		if err != nil {
 			return err
 		}
-		signedToken, err := signDroneJWT(deviceID, secret.Data["DRONE_IDENTITY_KEY"])
-		if err != nil {
-			return err
-		}
-		header := http.Header{}
-		header.Set("Authorization", "Bearer "+signedToken)
 		return postJSON(ctx, cloudSimulationCoordinatorURL+"/commands", header, nil, obj{
 			"subfolder": subfolder,
 			"message":   string(msg),
@@ -175,11 +183,19 @@ func (p *cloudiotAPI) SendCommand(ctx context.Context, simulation, deviceID, sub
 	return err
 }
 
-func (p *cloudiotAPI) Subscribe(ctx context.Context, deviceID, subfolder string, callback subscriptionCallback) error {
+func (p *cloudiotAPI) Subscribe(ctx context.Context, simulation, deviceID, subfolder string, callback subscriptionCallback) error {
 	if cloudMode {
 		return subMan.receive(ctx, deviceID, subfolder, callback)
 	}
-	conn, err := connectWebSocket(ctx, cloudSimulationCoordinatorURL+"/events/"+deviceID+subfolder)
+	header, err := newDroneTokenHeader(ctx, simulation, deviceID)
+	if err != nil {
+		return err
+	}
+	conn, err := connectWebSocket(
+		ctx,
+		cloudSimulationCoordinatorURL+"/events/"+deviceID+subfolder,
+		header,
+	)
 	if err != nil {
 		return err
 	}
@@ -312,7 +328,7 @@ func (p *mqttPublisher) SendCommand(ctx context.Context, simulation, deviceID, s
 	return nil
 }
 
-func (p *mqttPublisher) Subscribe(ctx context.Context, deviceID, subfolder string, callback subscriptionCallback) error {
+func (p *mqttPublisher) Subscribe(ctx context.Context, simulation, deviceID, subfolder string, callback subscriptionCallback) error {
 	prefix := fmt.Sprintf("/devices/%s/events", deviceID)
 	topics := prefix + subfolder + "#"
 	token := p.client.Subscribe(topics, 0, func(client mqtt.Client, msg mqtt.Message) {
@@ -360,6 +376,16 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	droneID := params.ByName("droneID")
 	path := params.ByName("path")
 
+	allowedDeviceID, err := validateAuthHeader(r)
+	if err != nil {
+		writeUnauthorized(w, "nonexistent or invalid JWT", err)
+		return
+	}
+	if allowedDeviceID != droneID {
+		writeError(w, "only device "+allowedDeviceID+" is allowed", nil, http.StatusForbidden)
+		return
+	}
+
 	conn, err := acceptWebsocket(w, r)
 	if err != nil {
 		writeBadRequest(w, "failed to upgrade connection", err)
@@ -390,6 +416,19 @@ func signDroneJWT(deviceID string, privateKey []byte) (string, error) {
 	}).SignedString(key)
 }
 
+func validateAuthHeader(r *http.Request) (string, error) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	var deviceID string
+	_, err := jwt.ParseWithClaims(token, &deviceIDJWTClaim{}, func(t *jwt.Token) (interface{}, error) {
+		deviceID = t.Claims.(*deviceIDJWTClaim).DeviceID
+		return cloudiotAPIClient.GetDeviceCredentials(r.Context(), deviceID, t.Method.Alg())
+	})
+	if err != nil {
+		return "", err
+	}
+	return deviceID, nil
+}
+
 type jsonString string
 
 func (s jsonString) MarshalJSON() ([]byte, error) {
@@ -397,7 +436,6 @@ func (s jsonString) MarshalJSON() ([]byte, error) {
 }
 
 func sendCommandHandler(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	var req struct {
 		Subfolder string `json:"subfolder"`
 		Message   string `json:"message"`
@@ -406,13 +444,9 @@ func sendCommandHandler(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "body must be valid JSON", err)
 		return
 	}
-	var deviceID string
-	_, err := jwt.ParseWithClaims(token, &deviceIDJWTClaim{}, func(t *jwt.Token) (interface{}, error) {
-		deviceID = t.Claims.(*deviceIDJWTClaim).DeviceID
-		return cloudiotAPIClient.GetDeviceCredentials(r.Context(), deviceID, t.Method.Alg())
-	})
+	deviceID, err := validateAuthHeader(r)
 	if err != nil {
-		writeBadRequest(w, "invalid JWT", err)
+		writeUnauthorized(w, "nonexistent or invalid JWT", err)
 		return
 	}
 	switch req.Subfolder {

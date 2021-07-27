@@ -65,6 +65,10 @@ func writeBadRequest(w http.ResponseWriter, message string, err error) {
 	writeError(w, message, err, http.StatusBadRequest)
 }
 
+func writeUnauthorized(w http.ResponseWriter, message string, err error) {
+	writeError(w, message, err, http.StatusUnauthorized)
+}
+
 func writeNotFound(w http.ResponseWriter, message string, err error) {
 	writeError(w, message, err, http.StatusNotFound)
 }

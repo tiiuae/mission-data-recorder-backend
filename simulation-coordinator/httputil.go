@@ -101,8 +101,10 @@ type websocketConn struct {
 	*websocket.Conn
 }
 
-func connectWebSocket(ctx context.Context, url string) (*websocketConn, error) {
-	c, _, err := websocket.Dial(ctx, url, nil)
+func connectWebSocket(ctx context.Context, url string, header http.Header) (*websocketConn, error) {
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+		HTTPHeader: header,
+	})
 	return &websocketConn{c}, err
 }
 

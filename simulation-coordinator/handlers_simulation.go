@@ -953,7 +953,7 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer client.Close()
-	err = client.Subscribe(c, droneID, req.Path, func(msg *subscriptionMessage) {
+	err = client.Subscribe(c, simulationName, droneID, req.Path, func(msg *subscriptionMessage) {
 		if err := conn.WriteJSON(c, msg); err != nil {
 			log.Println("failed to send event:", err)
 			cancel()
