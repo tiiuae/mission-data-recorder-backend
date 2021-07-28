@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -28,6 +30,36 @@ const (
 	SimulationGlobal     SimulationType = "global"
 	SimulationStandalone SimulationType = "standalone"
 )
+
+type SimulationGPUMode int
+
+const (
+	SimulationGPUModeNone SimulationGPUMode = iota
+	SimulationGPUModeNvidia
+)
+
+func (m SimulationGPUMode) String() string {
+	switch m {
+	case SimulationGPUModeNone:
+		return "none"
+	case SimulationGPUModeNvidia:
+		return "nvidia"
+	default:
+		return ""
+	}
+}
+
+func (m *SimulationGPUMode) Set(s string) error {
+	switch s {
+	case "none":
+		*m = SimulationGPUModeNone
+	case "nvidia":
+		*m = SimulationGPUModeNvidia
+	default:
+		return fmt.Errorf("unknown simulation GPU mode: %s", s)
+	}
+	return nil
+}
 
 var (
 	ErrNoSuchDrone = errors.New("kube: no such drone")
@@ -119,6 +151,150 @@ func CreateNamespace(ctx context.Context, name, id string, simType SimulationTyp
 		},
 	}
 	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+}
+
+func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, clientset *kubernetes.Clientset) error {
+	// Volume definitions
+	volumeGazeboData := v1.Volume{
+		Name: "gazebo-data-vol",
+		VolumeSource: v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{},
+		},
+	}
+	hostPathDirOrCreate := v1.HostPathDirectoryOrCreate
+	hostPathFile := v1.HostPathFile
+	volumeXSOCK := v1.Volume{
+		Name: "xsock",
+		VolumeSource: v1.VolumeSource{
+			HostPath: &v1.HostPathVolumeSource{
+				Path: "/tmp/.X11-unix",
+				Type: &hostPathDirOrCreate,
+			},
+		},
+	}
+	volumeXAUTH := v1.Volume{
+		Name: "xauth",
+		VolumeSource: v1.VolumeSource{
+			HostPath: &v1.HostPathVolumeSource{
+				Path: os.Getenv("XAUTHORITY"),
+				Type: &hostPathFile,
+			},
+		},
+	}
+
+	volumeMountGazeboData := v1.VolumeMount{
+		MountPath: "/data",
+		Name:      "gazebo-data-vol",
+	}
+	volumeMountXSOCK := v1.VolumeMount{
+		Name:      "xsock",
+		MountPath: "/tmp/.X11-unix",
+	}
+	volumeMountXAUTH := v1.VolumeMount{
+		Name:      "xauth",
+		MountPath: "/tmp/.docker.xauth",
+	}
+
+	volumes := []v1.Volume{volumeGazeboData}
+	volumeMounts := []v1.VolumeMount{volumeMountGazeboData}
+	env := []v1.EnvVar{}
+	var resources v1.ResourceRequirements
+	if gpuMode != SimulationGPUModeNone {
+		// GPU acceleration needs X server resources from the host machine
+		// will mount these to the gzserver
+		volumes = append(volumes, volumeXSOCK, volumeXAUTH)
+		volumeMounts = append(volumeMounts, volumeMountXSOCK, volumeMountXAUTH)
+		env = append(env, v1.EnvVar{
+			Name:  "DISPLAY",
+			Value: os.Getenv("DISPLAY"),
+		}, v1.EnvVar{
+			Name:  "XAUTHORITY",
+			Value: "/tmp/.docker.xauth",
+		}, v1.EnvVar{
+			Name:  "NVIDIA_DRIVER_CAPABILITIES",
+			Value: "all",
+		}, v1.EnvVar{
+			Name:  "NO_XVFB",
+			Value: "true",
+		})
+		resources.Limits = v1.ResourceList{
+			"nvidia.com/gpu": resource.MustParse("1"),
+		}
+	}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gzserver-dep",
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "gzserver-pod",
+				},
+			},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": "gzserver-pod",
+					},
+				},
+				Spec: v1.PodSpec{
+					Volumes: volumes,
+					InitContainers: []v1.Container{
+						{
+							Name:            "gazebo-data",
+							Image:           dataImage,
+							ImagePullPolicy: v1.PullIfNotPresent,
+							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "/gazebo-data/plugins", "/data"},
+							VolumeMounts: []v1.VolumeMount{
+								volumeMountGazeboData,
+							},
+						},
+					},
+					Containers: []v1.Container{
+						{
+							Name:            "gzserver",
+							Image:           gzserverImage,
+							ImagePullPolicy: v1.PullIfNotPresent,
+							Env:             env,
+							VolumeMounts:    volumeMounts,
+							Resources:       resources,
+						},
+					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
+				},
+			},
+		},
+	}
+	service := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gzserver-svc",
+			Namespace: namespace,
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{
+				{
+					Name: "gazebo",
+					Port: 11345,
+				},
+				{
+					Name: "api",
+					Port: 8081,
+				},
+			},
+			Selector: map[string]string{"app": "gzserver-pod"},
+			Type:     v1.ServiceTypeClusterIP,
+		},
+	}
+	_, err := clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	_, err = clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{})
+	return err
 }
 
 func CreateMQTT(c context.Context, namespace string, image string, loadBalancer bool, clientset *kubernetes.Clientset) error {

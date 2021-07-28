@@ -21,7 +21,6 @@ import (
 
 var (
 	imageGZServer                   = "eu.gcr.io/auto-fleet-mgnt/tii-gzserver:dev"
-	imageGZServerNvidia             = "eu.gcr.io/auto-fleet-mgnt/tii-gzserver:dev-nvidia"
 	imageGZWeb                      = "ghcr.io/tiiuae/tii-gzweb:latest"
 	imageFogDrone                   = "eu.gcr.io/auto-fleet-mgnt/tii-fog-drone:dev"
 	imageMQTTServer                 = "ghcr.io/tiiuae/tii-mqtt-server:latest"
@@ -78,7 +77,8 @@ var (
 	// passed as an environment variable instead of a command line parameter
 	// because Kubernetes Downwards API does not support command line
 	// parameters.
-	currentNamespace string
+	currentNamespace         string
+	defaultSimulationGPUMode = kube.SimulationGPUModeNone
 )
 
 func init() {
@@ -113,6 +113,7 @@ func init() {
 
 	flag.IntVar(&port, "port", port, "Port to listen to")
 	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable SIMULATION_COORDINATOR_NAMESPACE.")
+	flag.Var(&defaultSimulationGPUMode, "default-gpu-mode", "The default GPU mode for new simulations that don't specify the GPU mode to use")
 }
 
 func urlWithAuth(u url.URL) string {
@@ -161,15 +162,6 @@ func (v pullPolicyValue) Set(s string) error {
 	}
 }
 
-type SimulationGPUMode int
-
-const (
-	SimulationGPUModeNone SimulationGPUMode = iota
-	SimulationGPUModeNvidia
-)
-
-var simulationGPUMode SimulationGPUMode
-
 func withSignals(ctx context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(ctx)
 	c := make(chan os.Signal, 1)
@@ -183,13 +175,6 @@ func withSignals(ctx context.Context, signals ...os.Signal) (context.Context, co
 
 func main() {
 	flag.Parse()
-	// SIMULATION_GPU_MODE should be on of following:
-	// - none (or empty)
-	// - nvidia
-	switch os.Getenv("SIMULATION_GPU_MODE") {
-	case "nvidia":
-		simulationGPUMode = SimulationGPUModeNvidia
-	}
 
 	ctx, cancel := withSignals(context.Background(), os.Interrupt)
 	defer cancel()

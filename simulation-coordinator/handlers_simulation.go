@@ -18,7 +18,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,7 +28,6 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
-	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,13 +36,6 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubectl/pkg/scheme"
 	"nhooyr.io/websocket"
-)
-
-var (
-	gzserverImages = map[SimulationGPUMode]string{
-		SimulationGPUModeNone:   imageGZServer,
-		SimulationGPUModeNvidia: imageGZServerNvidia,
-	}
 )
 
 var errSimDoesNotExist = errors.New("simulation doesn't exist")
@@ -122,139 +113,6 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, obj{"mqtt_server": obj{"url": "tcp://" + hp}})
 }
 
-func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
-	// Volume definitions
-	volumeGazeboData := v1.Volume{
-		Name: "gazebo-data-vol",
-		VolumeSource: v1.VolumeSource{
-			EmptyDir: &v1.EmptyDirVolumeSource{},
-		},
-	}
-	hostPathType := v1.HostPathDirectoryOrCreate
-	volumeXSOCK := v1.Volume{
-		Name: "xsock",
-		VolumeSource: v1.VolumeSource{
-			HostPath: &v1.HostPathVolumeSource{
-				Path: "/tmp/.X11-unix",
-				Type: &hostPathType,
-			},
-		},
-	}
-	volumeXAUTH := v1.Volume{
-		Name: "xauth",
-		VolumeSource: v1.VolumeSource{
-			HostPath: &v1.HostPathVolumeSource{
-				Path: "/tmp/.docker.xauth",
-				Type: &hostPathType,
-			},
-		},
-	}
-
-	volumeMountGazeboData := v1.VolumeMount{
-		MountPath: "/data",
-		Name:      "gazebo-data-vol",
-	}
-	volumeMountXSOCK := v1.VolumeMount{
-		Name:      "xsock",
-		MountPath: "/tmp/.X11-unix",
-	}
-	volumeMountXAUTH := v1.VolumeMount{
-		Name:      "xauth",
-		MountPath: "/tmp/.docker.xauth",
-	}
-
-	volumes := []v1.Volume{
-		volumeGazeboData,
-	}
-	volumeMounts := []v1.VolumeMount{
-		volumeMountGazeboData,
-	}
-	env := []v1.EnvVar{}
-	if simulationGPUMode != SimulationGPUModeNone {
-		// GPU acceleration needs X server resources from the host machine
-		// will mount these to the gzserver
-		volumes = append(volumes, volumeXSOCK, volumeXAUTH)
-		volumeMounts = append(volumeMounts, volumeMountXSOCK, volumeMountXAUTH)
-		env = append(env, v1.EnvVar{
-			Name:  "DISPLAY",
-			Value: os.Getenv("DISPLAY"),
-		})
-		env = append(env, v1.EnvVar{
-			Name:  "XAUTHORITY",
-			Value: "/tmp/.docker.xauth",
-		})
-	}
-
-	gzserverDeployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gzserver-dep",
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "gzserver-pod",
-				},
-			},
-			Template: v1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": "gzserver-pod",
-					},
-				},
-				Spec: v1.PodSpec{
-					Volumes: volumes,
-					InitContainers: []v1.Container{
-						{
-							Name:            "gazebo-data",
-							Image:           dataImage,
-							ImagePullPolicy: kube.DefaultPullPolicy,
-							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "/gazebo-data/plugins", "/data"},
-							VolumeMounts: []v1.VolumeMount{
-								volumeMountGazeboData,
-							},
-						},
-					},
-					Containers: []v1.Container{
-						{
-							Name:            "gzserver",
-							Image:           gzserverImages[simulationGPUMode],
-							ImagePullPolicy: kube.DefaultPullPolicy,
-							Env:             env,
-							VolumeMounts:    volumeMounts,
-						},
-					},
-					ImagePullSecrets: []v1.LocalObjectReference{{
-						Name: "dockerconfigjson",
-					}},
-				},
-			},
-		},
-	}
-	return gzserverDeployment
-}
-func kubeSimGZServerService() *v1.Service {
-	return &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "gzserver-svc",
-		},
-		Spec: v1.ServiceSpec{
-			Ports: []v1.ServicePort{
-				{
-					Name: "gazebo",
-					Port: 11345,
-				},
-				{
-					Name: "api",
-					Port: 8081,
-				},
-			},
-
-			Selector: map[string]string{"app": "gzserver-pod"},
-			Type:     v1.ServiceTypeClusterIP,
-		},
-	}
-}
-
 // POST /simulations
 func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
@@ -264,6 +122,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		Standalone           bool   `json:"standalone"`
 		DataImage            string `json:"data_image"`
 		MissionDataDirectory string `json:"mission_data_directory"`
+		GPUMode              string `json:"gpu_mode"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&request)
 	r.Body.Close()
@@ -274,6 +133,13 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	if storeStandaloneMissionDataLocally && request.Standalone && request.MissionDataDirectory == "" {
 		writeBadRequest(w, "mission_data_directory must not be empty for standalone simulations", nil)
 		return
+	}
+	gpuMode := defaultSimulationGPUMode
+	if request.GPUMode != "" {
+		if gpuMode.Set(request.GPUMode); err != nil {
+			writeBadRequest(w, "gpu_mode is invalid", err)
+			return
+		}
 	}
 
 	clientset := getKube()
@@ -312,17 +178,9 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gzserverDeployment := kubeSimGZServerDeployment(request.DataImage)
-	gzserverDeployment, err = clientset.AppsV1().Deployments(request.Name).Create(c, gzserverDeployment, metav1.CreateOptions{})
+	err = kube.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, clientset)
 	if err != nil {
-		creationError = fmt.Errorf("Could not create gzserver deployment: %w", err)
-		return
-	}
-
-	gzserverService := kubeSimGZServerService()
-	gzserverService, err = clientset.CoreV1().Services(request.Name).Create(c, gzserverService, metav1.CreateOptions{})
-	if err != nil {
-		creationError = fmt.Errorf("Could not create gzserver service: %w", err)
+		creationError = fmt.Errorf("failed to create gzserver: %w", err)
 		return
 	}
 
