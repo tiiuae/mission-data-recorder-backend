@@ -41,9 +41,9 @@ import (
 )
 
 var (
-	imageGPUTag = map[SimulationGPUMode]string{
-		SimulationGPUModeNone:   ":latest",
-		SimulationGPUModeNvidia: ":nvidia",
+	gzserverImages = map[SimulationGPUMode]string{
+		SimulationGPUModeNone:   imageGZServer,
+		SimulationGPUModeNvidia: imageGZServerNvidia,
 	}
 )
 
@@ -210,7 +210,7 @@ func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
 						{
 							Name:            "gazebo-data",
 							Image:           dataImage,
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: kube.DefaultPullPolicy,
 							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "/gazebo-data/plugins", "/data"},
 							VolumeMounts: []v1.VolumeMount{
 								volumeMountGazeboData,
@@ -220,8 +220,8 @@ func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
 					Containers: []v1.Container{
 						{
 							Name:            "gzserver",
-							Image:           imageGZServer + imageGPUTag[simulationGPUMode],
-							ImagePullPolicy: v1.PullAlways,
+							Image:           gzserverImages[simulationGPUMode],
+							ImagePullPolicy: kube.DefaultPullPolicy,
 							Env:             env,
 							VolumeMounts:    volumeMounts,
 						},
@@ -434,7 +434,7 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 	err := kube.CreateViewer(
 		c,
 		simulationName,
-		imageGZWeb+":latest",
+		imageGZWeb,
 		"http://simulation-coordinator-svc."+currentNamespace,
 		getKube(),
 	)

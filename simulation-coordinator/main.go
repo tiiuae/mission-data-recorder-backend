@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -14,18 +15,23 @@ import (
 	"sync"
 
 	"github.com/julienschmidt/httprouter"
+	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
+	v1 "k8s.io/api/core/v1"
 )
 
 var (
-	imageGZServer                   = "ghcr.io/tiiuae/tii-gzserver"
-	imageGZWeb                      = "ghcr.io/tiiuae/tii-gzweb"
-	imageFogDrone                   = "ghcr.io/tiiuae/tii-fog-drone:latest"
+	imageGZServer                   = "eu.gcr.io/auto-fleet-mgnt/tii-gzserver:dev"
+	imageGZServerNvidia             = "eu.gcr.io/auto-fleet-mgnt/tii-gzserver:dev-nvidia"
+	imageGZWeb                      = "ghcr.io/tiiuae/tii-gzweb:latest"
+	imageFogDrone                   = "eu.gcr.io/auto-fleet-mgnt/tii-fog-drone:dev"
 	imageMQTTServer                 = "ghcr.io/tiiuae/tii-mqtt-server:latest"
 	imageMissionControl             = "ghcr.io/tiiuae/tii-mission-control:latest"
 	imageVideoServer                = "ghcr.io/tiiuae/tii-video-server:latest"
 	imageVideoMultiplexer           = "ghcr.io/tiiuae/tii-video-multiplexer:latest"
 	imageWebBackend                 = "ghcr.io/tiiuae/tii-web-backend:latest"
 	imageMissionDataRecorderBackend = "ghcr.io/tiiuae/tii-mission-data-recorder-backend:latest"
+
+	defaultPullPolicy = pullPolicyValue{value: &kube.DefaultPullPolicy}
 )
 
 var (
@@ -84,6 +90,8 @@ func init() {
 	flag.StringVar(&imageWebBackend, "image-web-backend", imageWebBackend, "Docker image for web backend")
 	flag.StringVar(&imageMissionDataRecorderBackend, "image-mission-data-recorder-backend", imageMissionDataRecorderBackend, "Docker image for mission data recorder backend")
 
+	flag.Var(&defaultPullPolicy, "pull-policy", `Kubernetes pull policy used for deployments. Supported values are "Always", "IfNotPresent" and "Never".`)
+
 	flag.StringVar(&mqttServerURL, "mqtt-server-url", mqttServerURL, "URL of the MQTT server")
 	flag.Var(&videoServerURL, "video-server-url", "URL of the video server")
 	flag.StringVar(&videoServerUsername, "video-server-username", videoServerUsername, "Username used to log in to the video server")
@@ -127,6 +135,27 @@ func (v urlValue) Set(s string) error {
 		*v.URL = *u
 	}
 	return nil
+}
+
+type pullPolicyValue struct {
+	value *v1.PullPolicy
+}
+
+func (v pullPolicyValue) String() string {
+	if v.value == nil {
+		return ""
+	}
+	return string(*v.value)
+}
+
+func (v pullPolicyValue) Set(s string) error {
+	switch v1.PullPolicy(s) {
+	case v1.PullAlways, v1.PullIfNotPresent, v1.PullNever:
+		*v.value = v1.PullPolicy(s)
+		return nil
+	default:
+		return fmt.Errorf(`unsupported pull policy: "%s"`, s)
+	}
 }
 
 type SimulationGPUMode int

@@ -19,6 +19,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+var DefaultPullPolicy = v1.PullIfNotPresent
+
 type SimulationType string
 
 const (
@@ -88,7 +90,7 @@ func CreateMQTT(c context.Context, namespace string, image string, clientset *ku
 						{
 							Name:            "mqtt-server",
 							Image:           image,
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -151,7 +153,7 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 							Name:            "mission-control",
 							Image:           image,
 							Args:            []string{"mission-control-svc:2222", "tcp://mqtt-server-svc:8883"},
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -220,7 +222,7 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 						{
 							Name:            "video-server",
 							Image:           image,
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -283,7 +285,7 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 							Name:            "video-multiplexer",
 							Image:           image,
 							Args:            []string{"-mqtt", "tcp://mqtt-server-svc:8883", "-rtsp", "video-server-svc:8554", "-test"},
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -346,7 +348,7 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 							Name:            "web-backend",
 							Image:           image,
 							Args:            []string{"tcp://mqtt-server-svc:8883"},
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -523,7 +525,7 @@ gcp:
 						{
 							Name:            "mission-data-recorder-backend",
 							Image:           opts.Image,
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 							VolumeMounts:    volumeMounts,
 						},
 					},
@@ -650,7 +652,7 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 						{
 							Name:            name,
 							Image:           opts.Image,
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 							Env:             droneContainerEnvs,
 						},
 					},
@@ -779,7 +781,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 						{
 							Name:            "gazebo-data",
 							Image:           dataImage,
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "gazebo-data/plugins", "/data"},
 							VolumeMounts: []v1.VolumeMount{
 								{
@@ -794,7 +796,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 							Name:            "gzweb",
 							Image:           image,
 							Args:            []string{"http://gzserver-svc:11345"},
-							ImagePullPolicy: v1.PullAlways,
+							ImagePullPolicy: DefaultPullPolicy,
 							VolumeMounts: []v1.VolumeMount{
 								{
 									MountPath: "/data",
