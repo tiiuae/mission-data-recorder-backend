@@ -49,10 +49,7 @@ var (
 
 var errSimDoesNotExist = errors.New("simulation doesn't exist")
 
-const (
-	minDroneRecordSizeThreshold         = 100_000
-	missionDataRecorederBackendCloudURL = "https://mission-data-upload.webapi.sacplatform.com"
-)
+const minDroneRecordSizeThreshold = 100_000
 
 func getSimulationType(ctx context.Context, simulationName string) (kube.SimulationType, error) {
 	ns, err := getKube().CoreV1().Namespaces().Get(ctx, simulationName, metav1.GetOptions{})

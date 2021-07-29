@@ -53,6 +53,8 @@ var (
 	}, ",")
 	cloudSimulationCoordinatorURL = "https://simulation.sacplatform.com"
 	cloudMode                     = false
+
+	missionDataRecorederBackendCloudURL = "https://mission-data-upload.webapi.sacplatform.com"
 )
 
 var (
@@ -72,7 +74,7 @@ var (
 	port                   = 8087
 	dockerConfigSecretName = "dockerconfigjson"
 
-	// Read from DOCKERCONFIG_SECRET_NAMESPACE environment variable. This is
+	// Read from SIMULATION_COORDINATOR_NAMESPACE environment variable. This is
 	// passed as an environment variable instead of a command line parameter
 	// because Kubernetes Downwards API does not support command line
 	// parameters.
@@ -97,8 +99,9 @@ func init() {
 	flag.StringVar(&videoServerUsername, "video-server-username", videoServerUsername, "Username used to log in to the video server")
 	flag.StringVar(&videoServerPassword, "video-server-password", videoServerPassword, "Password used to log in to the video server")
 	flag.StringVar(&pubsubSubscriptions, "events-subscriptions", pubsubSubscriptions, "Comma-separated list of Google Pub/Sub subscriptions to listen for device events.")
-	flag.StringVar(&cloudSimulationCoordinatorURL, "events-api-url", cloudSimulationCoordinatorURL, "URL of events API")
+	flag.StringVar(&cloudSimulationCoordinatorURL, "simulation-coordinator-url", cloudSimulationCoordinatorURL, "URL of simulation-coordinator instance in the cloud")
 	flag.BoolVar(&cloudMode, "cloud-mode", cloudMode, "If true, subscribes to the Google Pub/Sub subscriptions specified by -events-subscription and provides them in an endpoint. If false, uses mqtt-broker found in local Kubernetes cluster.")
+	flag.StringVar(&missionDataRecorederBackendCloudURL, "mission-data-recorder-backend-url", missionDataRecorederBackendCloudURL, "URL of mission data recorder backend server")
 
 	flag.StringVar(&projectID, "project-id", projectID, "Google Cloud project ID")
 	flag.StringVar(&registryID, "registry-id", registryID, "Google Cloud IoT Core registry ID")
@@ -109,7 +112,7 @@ func init() {
 	flag.BoolVar(&storeStandaloneMissionDataLocally, "store-standalone-mission-data-locally", storeStandaloneMissionDataLocally, "If true, mission data for standalone simulations is stored in the local file system. If false, it is stored in a Google Cloud Bucket.")
 
 	flag.IntVar(&port, "port", port, "Port to listen to")
-	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable DOCKERCONFIG_SECRET_NAMESPACE.")
+	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable SIMULATION_COORDINATOR_NAMESPACE.")
 }
 
 func urlWithAuth(u url.URL) string {
@@ -192,9 +195,9 @@ func main() {
 	defer cancel()
 	var wg sync.WaitGroup
 
-	currentNamespace = os.Getenv("DOCKERCONFIG_SECRET_NAMESPACE")
+	currentNamespace = os.Getenv("SIMULATION_COORDINATOR_NAMESPACE")
 	if currentNamespace == "" {
-		log.Fatalln("Environment variable DOCKERCONFIG_SECRET_NAMESPACE is not defined")
+		log.Fatalln("Environment variable SIMULATION_COORDINATOR_NAMESPACE is not defined")
 	}
 
 	if cloudMode {
