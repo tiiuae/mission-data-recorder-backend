@@ -117,12 +117,12 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, obj{"mqtt_server": obj{"url": mqttServerURL}})
 		return
 	}
-	mqttIP, err := waitLoadBalancerIP(r.Context(), simulationName, "mqtt-server-svc")
+	hp, err := waitHostPort(r.Context(), simulationName, "mqtt-server-public-svc")
 	if err != nil {
 		writeServerError(w, "Error getting mqtt server address", err)
 		return
 	}
-	writeJSON(w, obj{"mqtt_server": obj{"url": "tcp://" + mqttIP + ":8883"}})
+	writeJSON(w, obj{"mqtt_server": obj{"url": "tcp://" + hp}})
 }
 
 func kubeSimGZServerDeployment(dataImage string) *appsv1.Deployment {
@@ -330,7 +330,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if request.Standalone {
-		err = kube.CreateMQTT(c, request.Name, imageMQTTServer, clientset)
+		err = kube.CreateMQTT(c, request.Name, imageMQTTServer, !cloudMode, clientset)
 		if err != nil {
 			creationError = fmt.Errorf("error creating mqtt-server deployment: %w", err)
 			return
@@ -431,12 +431,23 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
-	err := kube.CreateViewer(
+	clientset := getKube()
+	simCoordSvc, err := clientset.CoreV1().Services(currentNamespace).Get(c, "simulation-coordinator-svc", metav1.GetOptions{})
+	if err != nil {
+		writeServerError(w, "failed to get simulation coordinator port", err)
+		return
+	}
+	err = kube.CreateViewer(
 		c,
 		simulationName,
 		imageGZWeb,
-		"http://simulation-coordinator-svc."+currentNamespace,
-		getKube(),
+		fmt.Sprint(
+			"http://simulation-coordinator-svc.",
+			currentNamespace,
+			":",
+			simCoordSvc.Spec.Ports[0].Port,
+		),
+		clientset,
 	)
 	if err != nil {
 		writeServerError(w, "Unable to create viewer", err)
@@ -457,11 +468,12 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	ip, err := waitLoadBalancerIP(c, simulationName, "gzweb-svc")
-	resp := obj{
-		"id":   viewerClientID,
-		"host": ip,
+	hp, err := waitHostPort(c, simulationName, "gzweb-svc")
+	if err != nil {
+		writeServerError(w, "failed to get IP", err)
+		return
 	}
+	resp := obj{"id": viewerClientID, "host": hp}
 	if err = conn.WriteJSON(c, resp); err != nil {
 		log.Println(err)
 		return
@@ -568,7 +580,19 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			opts.MQTTBrokerAddress = "tcp://mqtt-server-svc:8883"
-			opts.RTSPServerAddress = "rtsp://" + videoServerUsername + ":" + videoServerPassword + "@video-server-svc:8554"
+			videoSvc, err := getKube().CoreV1().Services(simulationName).Get(c, "video-server-svc", metav1.GetOptions{})
+			if err != nil {
+				writeServerError(w, "failed to get video server port", err)
+				return
+			}
+			opts.RTSPServerAddress = fmt.Sprint(
+				"rtsp://",
+				videoServerUsername,
+				":",
+				videoServerPassword,
+				"@video-server-svc:",
+				videoSvc.Spec.Ports[0].Port,
+			)
 			opts.MissionDataRecording.BackendURL = "http://mission-data-recorder-backend-svc"
 		default:
 			panic("invalid simulation type: " + simType)
@@ -750,7 +774,7 @@ func getDrones(ctx context.Context, simulationName string) ([]drone, error) {
 	return resp, nil
 }
 
-func waitLoadBalancerIP(c context.Context, namespace string, serviceName string) (string, error) {
+func waitHostPort(c context.Context, namespace, serviceName string) (string, error) {
 	kube := getKube()
 	for {
 		lb, err := kube.CoreV1().Services(namespace).Get(c, serviceName, metav1.GetOptions{})
@@ -758,13 +782,13 @@ func waitLoadBalancerIP(c context.Context, namespace string, serviceName string)
 			return "", err
 		}
 		if len(lb.Status.LoadBalancer.Ingress) > 0 {
-			return lb.Status.LoadBalancer.Ingress[0].IP, nil
+			return fmt.Sprint(lb.Status.LoadBalancer.Ingress[0].IP, ":", lb.Spec.Ports[0].Port), nil
 		}
 
 		select {
 		case <-c.Done():
 			// timeout/cancel
-			return "", nil
+			return "", c.Err()
 		case <-time.After(500 * time.Millisecond):
 			// continue polling
 		}
@@ -981,12 +1005,11 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 	if simType == kube.SimulationStandalone {
 		mqttServer = fmt.Sprintf("mqtt-server-svc.%s:8883", simulationName)
 		videoServer = url.URL{Scheme: "rtsp"}
-		videoServer.Host, err = waitLoadBalancerIP(ctx, simulationName, "video-server-svc")
+		videoServer.Host, err = waitHostPort(ctx, simulationName, "video-server-public-svc")
 		if err != nil {
 			writeServerError(w, "error getting video server address", err)
 			return
 		}
-		videoServer.Host += ":8554"
 	}
 	videoServer.Path = "/" + droneID
 
@@ -1005,7 +1028,9 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	videoServer.Scheme = "rtsp"
-	videoServer.Host = videoServer.Hostname() + ":8554"
+	if videoServer.Port() == "8555" {
+		videoServer.Host = videoServer.Hostname() + ":8554"
+	}
 	writeJSON(w, obj{"video_url": videoServer.String()})
 }
 

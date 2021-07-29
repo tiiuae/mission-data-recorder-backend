@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,14 @@ var (
 	ErrDroneExists = errors.New("drone already exists")
 )
 
+const (
+	globalPortRangeStart  = 38400
+	portRangeSize         = 5
+	videoServerPortOffset = 0
+	gzwebPortOffset       = 1
+	mqttServerPortOffset  = 2
+)
+
 func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string, clientset *kubernetes.Clientset) error {
 	secret, err := clientset.CoreV1().Secrets(fromNamespace).Get(ctx, fromName, metav1.GetOptions{})
 	if err != nil {
@@ -50,7 +59,51 @@ func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toNam
 	return err
 }
 
+func getPortRange(ctx context.Context, namespace string, clientset *kubernetes.Clientset) (int32, error) {
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		return 0, err
+	}
+	p, err := strconv.ParseInt(ns.ObjectMeta.Annotations["dronsole-port-range-start"], 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return int32(p), nil
+}
+
+func getFirstFreePortRange(ctx context.Context, clientset *kubernetes.Clientset) (int, error) {
+	nss, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, err
+	}
+	var errs *multierror.Error
+	var ports sort.IntSlice
+	for _, ns := range nss.Items {
+		port, err := strconv.Atoi(ns.ObjectMeta.Annotations["dronsole-port-range-start"])
+		errs = multierror.Append(errs, err)
+		ports = append(ports, port)
+	}
+	sort.Sort(ports)
+	current := globalPortRangeStart
+	for _, port := range ports {
+		if port < current {
+			continue
+		} else if port >= current+portRangeSize {
+			return current, errs.ErrorOrNil()
+		}
+		current += portRangeSize
+	}
+	return current, errs.ErrorOrNil()
+}
+
 func CreateNamespace(ctx context.Context, name, id string, simType SimulationType, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
+	port, err := getFirstFreePortRange(ctx, clientset)
+	if port == 0 {
+		return nil, fmt.Errorf("failed to get a free port range: %w", err)
+	}
+	if err != nil {
+		log.Println("errors occurred when searching for a free port range:", err)
+	}
 	ns := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -61,13 +114,14 @@ func CreateNamespace(ctx context.Context, name, id string, simType SimulationTyp
 			Annotations: map[string]string{
 				"dronsole-expiration-timestamp": time.Now().Add(2 * time.Hour).Format(time.RFC3339),
 				"dronsole-simulation-id":        id,
+				"dronsole-port-range-start":     strconv.Itoa(port),
 			},
 		},
 	}
 	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 }
 
-func CreateMQTT(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
+func CreateMQTT(c context.Context, namespace string, image string, loadBalancer bool, clientset *kubernetes.Clientset) error {
 
 	mqttDeployment := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -103,8 +157,7 @@ func CreateMQTT(c context.Context, namespace string, image string, clientset *ku
 
 	_, err := clientset.AppsV1().Deployments(namespace).Create(c, &mqttDeployment, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating mqtt-server deployment %v", err)
-		return err
+		return fmt.Errorf("Error creating mqtt-server deployment %w", err)
 	}
 
 	mqttService := v1.Service{
@@ -116,16 +169,36 @@ func CreateMQTT(c context.Context, namespace string, image string, clientset *ku
 				Port: 8883,
 			}},
 			Selector: map[string]string{"app": "mqtt-server-pod"},
-			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
 
 	_, err = clientset.CoreV1().Services(namespace).Create(c, &mqttService, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating mqtt-server service %v", err)
-		return err
+		return fmt.Errorf("Error creating mqtt-server service %w", err)
 	}
-
+	if loadBalancer {
+		portRange, err := getPortRange(c, namespace, clientset)
+		if err != nil {
+			return err
+		}
+		publicService := &v1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "mqtt-server-public-svc",
+			},
+			Spec: v1.ServiceSpec{
+				Ports: []v1.ServicePort{{
+					Port:       portRange + mqttServerPortOffset,
+					TargetPort: intstr.FromInt(8883),
+				}},
+				Selector: map[string]string{"app": "mqtt-server-pod"},
+				Type:     v1.ServiceTypeLoadBalancer,
+			},
+		}
+		_, err = clientset.CoreV1().Services(namespace).Create(c, publicService, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("Error creating mqtt-server public service %w", err)
+		}
+	}
 	return nil
 }
 
@@ -200,7 +273,10 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 }
 
 func CreateVideoServer(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
-
+	portRange, err := getPortRange(c, namespace, clientset)
+	if err != nil {
+		return err
+	}
 	videoServerDeployment := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "video-server-dep",
@@ -233,10 +309,9 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 		},
 	}
 
-	_, err := clientset.AppsV1().Deployments(namespace).Create(c, &videoServerDeployment, metav1.CreateOptions{})
+	_, err = clientset.AppsV1().Deployments(namespace).Create(c, &videoServerDeployment, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating video-server deployment %v", err)
-		return err
+		return fmt.Errorf("Error creating video-server deployment %w", err)
 	}
 
 	videoServerService := v1.Service{
@@ -248,16 +323,31 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 				Port: 8554,
 			}},
 			Selector: map[string]string{"app": "video-server-pod"},
-			Type:     v1.ServiceTypeLoadBalancer,
 		},
 	}
 
 	_, err = clientset.CoreV1().Services(namespace).Create(c, &videoServerService, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating video-server service %v", err)
-		return err
+		return fmt.Errorf("Error creating video-server service %w", err)
 	}
 
+	publicService := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "video-server-public-svc",
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{{
+				Port:       portRange + videoServerPortOffset,
+				TargetPort: intstr.FromInt(8554),
+			}},
+			Selector: map[string]string{"app": "video-server-pod"},
+			Type:     v1.ServiceTypeLoadBalancer,
+		},
+	}
+	_, err = clientset.CoreV1().Services(namespace).Create(c, publicService, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("Error creating video-server service %w", err)
+	}
 	return nil
 }
 
@@ -743,11 +833,15 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 		return nil
 	}
 
+	portRange, err := getPortRange(c, namespace, kube)
+	if err != nil {
+		return err
+	}
+
 	// get gzserver deployment
 	gzserverDep, err := kube.AppsV1().Deployments(namespace).Get(c, "gzserver-dep", metav1.GetOptions{})
 	if err != nil {
-		log.Printf("Unable to get gzserver-dep")
-		return err
+		return fmt.Errorf("Unable to get gzserverwdep")
 	}
 
 	dataImage := gzserverDep.Spec.Template.Spec.InitContainers[0].Image
@@ -822,8 +916,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 
 	gzwebDeployment, err = kube.AppsV1().Deployments(namespace).Create(c, gzwebDeployment, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating gzweb deployment %v", err)
-		return err
+		return fmt.Errorf("Error creating gzweb deployment %w", err)
 	}
 
 	gzwebService := &v1.Service{
@@ -833,7 +926,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 		Spec: v1.ServiceSpec{
 			Ports: []v1.ServicePort{{
 				Name:       "primary",
-				Port:       80,
+				Port:       portRange + gzwebPortOffset,
 				TargetPort: intstr.FromInt(8080),
 			}},
 			Selector: map[string]string{"app": "gzweb-pod"},
@@ -841,10 +934,9 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 		},
 	}
 
-	gzwebService, err = kube.CoreV1().Services(namespace).Create(c, gzwebService, metav1.CreateOptions{})
+	_, err = kube.CoreV1().Services(namespace).Create(c, gzwebService, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating gzweb service %v", err)
-		return err
+		return fmt.Errorf("Error creating gzweb service %w", err)
 	}
 	return nil
 }
