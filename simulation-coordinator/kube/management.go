@@ -111,9 +111,12 @@ func getFirstFreePortRange(ctx context.Context, clientset *kubernetes.Clientset)
 	var errs *multierror.Error
 	var ports sort.IntSlice
 	for _, ns := range nss.Items {
-		port, err := strconv.Atoi(ns.ObjectMeta.Annotations["dronsole-port-range-start"])
-		errs = multierror.Append(errs, err)
-		ports = append(ports, port)
+		portStr, ok := ns.ObjectMeta.Annotations["dronsole-port-range-start"]
+		if ok {
+			port, err := strconv.Atoi(portStr)
+			errs = multierror.Append(errs, err)
+			ports = append(ports, port)
+		}
 	}
 	sort.Sort(ports)
 	current := globalPortRangeStart
