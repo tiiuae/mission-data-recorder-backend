@@ -61,8 +61,9 @@ func (m *SimulationGPUMode) Set(s string) error {
 }
 
 var (
-	ErrNoSuchDrone = errors.New("kube: no such drone")
-	ErrDroneExists = errors.New("drone already exists")
+	ErrNoSuchDrone           = errors.New("kube: no such drone")
+	ErrDroneExists           = errors.New("drone already exists")
+	ErrSimulationDoesntExist = errors.New("simulation doesn't exist")
 )
 
 const (
@@ -153,6 +154,16 @@ func CreateNamespace(ctx context.Context, name, id string, simType SimulationTyp
 		},
 	}
 	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+}
+
+func RemoveSimulation(ctx context.Context, name string, clientset *kubernetes.Clientset) error {
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) || (err == nil && ns.Labels["dronsole-type"] != "simulation") {
+		return ErrSimulationDoesntExist
+	} else if err != nil {
+		return err
+	}
+	return clientset.CoreV1().Namespaces().Delete(ctx, name, *metav1.NewDeleteOptions(5))
 }
 
 func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode bool, clientset *kubernetes.Clientset) error {

@@ -275,12 +275,12 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
-	kube := getKube()
 
-	err := kube.CoreV1().Namespaces().Delete(c, simulationName, *metav1.NewDeleteOptions(10))
-	if err != nil {
-		writeError(w, "Could not delete simulation", err, http.StatusInternalServerError)
-		return
+	err := kube.RemoveSimulation(c, simulationName, getKube())
+	if errors.Is(err, kube.ErrSimulationDoesntExist) {
+		writeNotFound(w, "Simulation doesn't exist", nil)
+	} else if err != nil {
+		writeServerError(w, "Could not delete simulation", err)
 	}
 }
 
