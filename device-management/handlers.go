@@ -20,8 +20,10 @@ type DroneConfig struct {
 }
 
 type ProfileConfig struct {
-	URL     string `yaml:"url"`
-	HashSum string `yaml:"hashsum"`
+	Version  int    `yaml:"version"`
+	URL      string `yaml:"manifest-uri"`
+	HashSum  string `yaml:"manifest-hash"`
+	SignedBy string `yaml:"signed-by"`
 }
 
 type InitialWifiConfig struct {
@@ -42,8 +44,10 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		DeviceIDs []string `json:"device_ids"`
 		Profile   struct {
-			URL     string `json:"url"`
-			HashSum string `json:"hashsum"`
+			Version  int    `json:"version"`
+			URL      string `json:"manifest-uri"`
+			HashSum  string `json:"manifest-hash"`
+			SignedBy string `json:"signed-by"`
 		} `json:"profile"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&request)
@@ -78,8 +82,10 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// update the configuration in IoT Core
+		cfg.Profile.Version = request.Profile.Version
 		cfg.Profile.URL = request.Profile.URL
 		cfg.Profile.HashSum = request.Profile.HashSum
+		cfg.Profile.SignedBy = request.Profile.SignedBy
 
 		newCfg, err := serializeConfig(cfg)
 		if err != nil {
@@ -159,8 +165,10 @@ func defaultConfiguration() *DroneConfig {
 
 func defaultProfile() *ProfileConfig {
 	return &ProfileConfig{
-		URL:     "",
-		HashSum: "",
+		Version:  0,
+		URL:      "",
+		HashSum:  "",
+		SignedBy: "",
 	}
 }
 
