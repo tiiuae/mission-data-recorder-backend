@@ -195,7 +195,12 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 			creationError = fmt.Errorf("error creating mission-control deployment: %w", err)
 			return
 		}
-		err = kube.CreateVideoServer(c, request.Name, imageVideoServer, clientset)
+		videoKey, videoCert, err := generateCertificate()
+		if err != nil {
+			creationError = fmt.Errorf("error generating video-server certificates: %w", err)
+			return
+		}
+		err = kube.CreateVideoServer(c, request.Name, imageVideoServer, videoCert, videoKey, clientset)
 		if err != nil {
 			creationError = fmt.Errorf("error creating video-server deployment: %w", err)
 			return
@@ -421,7 +426,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			opts.MissionDataRecording.BackendURL = missionDataRecorederBackendCloudURL
 		case kube.SimulationStandalone:
 			if request.PrivateKey == "" {
-				request.PrivateKey, _, err = generateMQTTCertificate()
+				request.PrivateKey, _, err = generateCertificate()
 				if err != nil {
 					writeBadRequest(w, "Automatic generation of private key failed. Provide it in the request body.", nil)
 					return
@@ -504,7 +509,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 	creationSucceeded = true
 }
 
-func generateMQTTCertificate() (privateKey, publicKey string, err error) {
+func generateCertificate() (privateKey, publicKey string, err error) {
 	priv, err := rsa.GenerateKey(cryptoRand.Reader, 2048)
 	if err != nil {
 		return "", "", fmt.Errorf("could not generate private rsa key: %w", err)

@@ -451,8 +451,21 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 	return nil
 }
 
-func CreateVideoServer(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
+func CreateVideoServer(c context.Context, namespace, image, cert, key string, clientset *kubernetes.Clientset) error {
 	portRange, err := getPortRange(c, namespace, clientset)
+	if err != nil {
+		return err
+	}
+	secret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "video-server-secret",
+		},
+		StringData: map[string]string{
+			"server.crt": cert,
+			"server.key": key,
+		},
+	}
+	_, err = clientset.CoreV1().Secrets(namespace).Create(c, secret, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -478,10 +491,23 @@ func CreateVideoServer(c context.Context, namespace string, image string, client
 							Name:            "video-server",
 							Image:           image,
 							ImagePullPolicy: DefaultPullPolicy,
+							VolumeMounts: []v1.VolumeMount{{
+								Name:      "cert",
+								ReadOnly:  true,
+								MountPath: "/certs",
+							}},
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
 						Name: "dockerconfigjson",
+					}},
+					Volumes: []v1.Volume{{
+						Name: "cert",
+						VolumeSource: v1.VolumeSource{
+							Secret: &v1.SecretVolumeSource{
+								SecretName: "video-server-secret",
+							},
+						},
 					}},
 				},
 			},
