@@ -16,7 +16,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
@@ -156,7 +155,7 @@ func CreateNamespace(ctx context.Context, name, id string, simType SimulationTyp
 	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 }
 
-func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, clientset *kubernetes.Clientset) error {
+func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode bool, clientset *kubernetes.Clientset) error {
 	// Volume definitions
 	volumeGazeboData := v1.Volume{
 		Name: "gazebo-data-vol",
@@ -165,7 +164,6 @@ func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage str
 		},
 	}
 	hostPathDirOrCreate := v1.HostPathDirectoryOrCreate
-	hostPathFile := v1.HostPathFile
 	volumeXSOCK := v1.Volume{
 		Name: "xsock",
 		VolumeSource: v1.VolumeSource{
@@ -180,7 +178,6 @@ func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage str
 		VolumeSource: v1.VolumeSource{
 			HostPath: &v1.HostPathVolumeSource{
 				Path: os.Getenv("XAUTHORITY"),
-				Type: &hostPathFile,
 			},
 		},
 	}
@@ -201,7 +198,7 @@ func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage str
 	volumes := []v1.Volume{volumeGazeboData}
 	volumeMounts := []v1.VolumeMount{volumeMountGazeboData}
 	env := []v1.EnvVar{}
-	var resources v1.ResourceRequirements
+	var affinity *v1.Affinity
 	if gpuMode != SimulationGPUModeNone {
 		// GPU acceleration needs X server resources from the host machine
 		// will mount these to the gzserver
@@ -214,14 +211,22 @@ func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage str
 			Name:  "XAUTHORITY",
 			Value: "/tmp/.docker.xauth",
 		}, v1.EnvVar{
-			Name:  "NVIDIA_DRIVER_CAPABILITIES",
-			Value: "all",
-		}, v1.EnvVar{
 			Name:  "NO_XVFB",
 			Value: "true",
 		})
-		resources.Limits = v1.ResourceList{
-			"nvidia.com/gpu": resource.MustParse("1"),
+		if cloudMode {
+			affinity = &v1.Affinity{
+				NodeAffinity: &v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{{
+							MatchExpressions: []v1.NodeSelectorRequirement{{
+								Key:      "cloud.google.com/gke-accelerator",
+								Operator: v1.NodeSelectorOpExists,
+							}},
+						}},
+					},
+				},
+			}
 		}
 	}
 
@@ -262,12 +267,12 @@ func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage str
 							ImagePullPolicy: v1.PullIfNotPresent,
 							Env:             env,
 							VolumeMounts:    volumeMounts,
-							Resources:       resources,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
 						Name: "dockerconfigjson",
 					}},
+					Affinity: affinity,
 				},
 			},
 		},
@@ -825,6 +830,9 @@ gcp:
 						},
 					},
 					Volumes: volumes,
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
 				},
 			},
 		},

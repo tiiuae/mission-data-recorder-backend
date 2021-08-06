@@ -178,7 +178,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = kube.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, clientset)
+	err = kube.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, cloudMode, clientset)
 	if err != nil {
 		creationError = fmt.Errorf("failed to create gzserver: %w", err)
 		return
