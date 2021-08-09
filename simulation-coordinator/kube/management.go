@@ -23,6 +23,12 @@ import (
 
 var DefaultPullPolicy = v1.PullIfNotPresent
 
+const nonExpiringDuration = 100 * 365 * 24 * time.Hour
+
+func currentExpiryTime(d time.Duration) string {
+	return time.Now().Add(d).UTC().Format(time.RFC3339)
+}
+
 type SimulationType string
 
 const (
@@ -131,7 +137,13 @@ func getFirstFreePortRange(ctx context.Context, clientset *kubernetes.Clientset)
 	return current, errs.ErrorOrNil()
 }
 
-func CreateNamespace(ctx context.Context, name, id string, simType SimulationType, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
+type CreateNamespaceOptions struct {
+	Name, ID       string
+	SimType        SimulationType
+	ExpiryDuration time.Duration
+}
+
+func CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
 	port, err := getFirstFreePortRange(ctx, clientset)
 	if port == 0 {
 		return nil, fmt.Errorf("failed to get a free port range: %w", err)
@@ -139,21 +151,38 @@ func CreateNamespace(ctx context.Context, name, id string, simType SimulationTyp
 	if err != nil {
 		log.Println("errors occurred when searching for a free port range:", err)
 	}
+	var expiryTime string
+	if opts.ExpiryDuration == 0 {
+		expiryTime = currentExpiryTime(nonExpiringDuration)
+	} else {
+		expiryTime = currentExpiryTime(opts.ExpiryDuration)
+	}
 	ns := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name: opts.Name,
 			Labels: map[string]string{
 				"dronsole-type":            "simulation",
-				"dronsole-simulation-type": string(simType),
+				"dronsole-simulation-type": string(opts.SimType),
 			},
 			Annotations: map[string]string{
-				"dronsole-expiration-timestamp": time.Now().Add(2 * time.Hour).Format(time.RFC3339),
-				"dronsole-simulation-id":        id,
+				"dronsole-expiration-timestamp": expiryTime,
+				"dronsole-expiry-duration":      opts.ExpiryDuration.String(),
+				"dronsole-simulation-id":        opts.ID,
 				"dronsole-port-range-start":     strconv.Itoa(port),
 			},
 		},
 	}
 	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+}
+
+func GetSimulation(ctx context.Context, name string, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) || (err == nil && ns.Labels["dronsole-type"] != "simulation") {
+		return nil, ErrSimulationDoesntExist
+	} else if err != nil {
+		return nil, err
+	}
+	return ns, nil
 }
 
 func RemoveSimulation(ctx context.Context, name string, clientset *kubernetes.Clientset) error {
@@ -164,6 +193,51 @@ func RemoveSimulation(ctx context.Context, name string, clientset *kubernetes.Cl
 		return err
 	}
 	return clientset.CoreV1().Namespaces().Delete(ctx, name, *metav1.NewDeleteOptions(5))
+}
+
+func RefreshSimulationExpiryTime(ctx context.Context, name string, clientset *kubernetes.Clientset) error {
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) || (err == nil && ns.Labels["dronsole-type"] != "simulation") {
+		return ErrSimulationDoesntExist
+	} else if err != nil {
+		return err
+	}
+	expiryDuration, err := time.ParseDuration(ns.Annotations["dronsole-expiry-duration"])
+	if err != nil {
+		return err
+	}
+	if expiryDuration == 0 {
+		return nil
+	}
+	ns.Annotations["dronsole-expiration-timestamp"] = currentExpiryTime(expiryDuration)
+	_, err = clientset.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{})
+	return err
+}
+
+func RemoveExpiredSimulations(ctx context.Context, clientset *kubernetes.Clientset) error {
+	sims, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
+		LabelSelector: "dronsole-type = simulation",
+	})
+	if err != nil {
+		return err
+	}
+	deleteOpts := *metav1.NewDeleteOptions(0)
+	now := time.Now()
+	var errs *multierror.Error
+	for _, sim := range sims.Items {
+		expiryTimeStr := sim.Annotations["dronsole-expiration-timestamp"]
+		if expiryTimeStr != "" {
+			expiryTime, err := time.Parse(time.RFC3339, expiryTimeStr)
+			if err != nil {
+				errs = multierror.Append(errs, err)
+			} else if now.After(expiryTime) {
+				errs = multierror.Append(errs,
+					clientset.CoreV1().Namespaces().Delete(ctx, sim.Name, deleteOpts),
+				)
+			}
+		}
+	}
+	return errs.ErrorOrNil()
 }
 
 func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode bool, clientset *kubernetes.Clientset) error {

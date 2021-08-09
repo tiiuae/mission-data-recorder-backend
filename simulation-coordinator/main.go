@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/julienschmidt/httprouter"
 	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
@@ -79,6 +80,8 @@ var (
 	// parameters.
 	currentNamespace         string
 	defaultSimulationGPUMode = kube.SimulationGPUModeNone
+	defaultExpiryDuration    = 2 * 24 * time.Hour
+	expiryCheckInterval      = time.Hour
 )
 
 func init() {
@@ -114,6 +117,8 @@ func init() {
 	flag.IntVar(&port, "port", port, "Port to listen to")
 	flag.StringVar(&dockerConfigSecretName, "docker-config-secret", dockerConfigSecretName, "The name of the secret to use for pulling images. It must be in the namespace specified in the environment variable SIMULATION_COORDINATOR_NAMESPACE.")
 	flag.Var(&defaultSimulationGPUMode, "default-gpu-mode", "The default GPU mode for new simulations that don't specify the GPU mode to use")
+	flag.DurationVar(&defaultExpiryDuration, "simulation-expiry-duration", defaultExpiryDuration, "Simulations will be automatically removed after this duration if they have not been interacted with")
+	flag.DurationVar(&expiryCheckInterval, "expiry-check-interval", expiryCheckInterval, "How often simulations are checked for expiration")
 }
 
 func urlWithAuth(u url.URL) string {
@@ -203,6 +208,16 @@ func main() {
 			}
 		}()
 	}
+	if expiryCheckInterval != 0 {
+		wg.Add(1)
+		go func() {
+			defer func() {
+				cancel()
+				wg.Done()
+			}()
+			expiryWatcher(ctx, expiryCheckInterval)
+		}()
+	}
 
 	if !storeStandaloneMissionDataLocally {
 		recorderBackendKey, err := ioutil.ReadFile(missionDataRecorderBackendKeyPath)
@@ -243,9 +258,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for ctx.Err() == nil {
-			log.Println("listen returned an error:", server.ListenAndServe())
-		}
+		log.Println("listen returned an error:", server.ListenAndServe())
 	}()
 	<-ctx.Done()
 	if err := server.Shutdown(ctx); err != nil {
@@ -266,4 +279,18 @@ func setCORSHeader(handler http.Handler) http.Handler {
 func isValidOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	return strings.HasSuffix(o, "localhost:8080") || strings.HasSuffix(o, "sacplatform.com")
+}
+
+func expiryWatcher(ctx context.Context, interval time.Duration) error {
+	clientset := getKube()
+	for {
+		if err := kube.RemoveExpiredSimulations(ctx, clientset); err != nil {
+			log.Println("an error occurred while removing expired simulations:", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }

@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dgrijalva/jwt-go"
 	"github.com/google/uuid"
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
@@ -154,7 +155,13 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	if request.Standalone {
 		simType = kube.SimulationStandalone
 	}
-	ns, err := kube.CreateNamespace(c, request.Name, simulationID, simType, clientset)
+	opts := kube.CreateNamespaceOptions{
+		Name:           request.Name,
+		ID:             simulationID,
+		SimType:        simType,
+		ExpiryDuration: defaultExpiryDuration,
+	}
+	ns, err := kube.CreateNamespace(c, &opts, clientset)
 	if err != nil {
 		writeError(w, "Could not create namespace for the simulation", err, http.StatusInternalServerError)
 		return
@@ -1026,4 +1033,16 @@ func (s *remoteShell) Write(p []byte) (int, error) {
 
 func (s *remoteShell) Next() *remotecommand.TerminalSize {
 	return <-s.sizeQueue
+}
+
+func refreshSimulationExpiry(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params := httprouter.ParamsFromContext(r.Context())
+		name := params.ByName("simulationName")
+		err := kube.RefreshSimulationExpiryTime(r.Context(), name, getKube())
+		if err != nil {
+			log.Printf(`an error occurred when refreshing expiry time of simulation "%s": %v`, name, err)
+		}
+		next(w, r)
+	})
 }
