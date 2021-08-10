@@ -21,9 +21,9 @@ import (
 )
 
 var (
-	imageGZServer                   = "eu.gcr.io/auto-fleet-mgnt/tii-gzserver:dev"
+	imageGZServer                   = "ghcr.io/tiiuae/tii-gzserver:dev"
 	imageGZWeb                      = "ghcr.io/tiiuae/tii-gzweb:latest"
-	imageFogDrone                   = "eu.gcr.io/auto-fleet-mgnt/tii-fog-drone:dev"
+	imageFogDrone                   = "ghcr.io/tiiuae/tii-fog-drone:dev"
 	imageMQTTServer                 = "ghcr.io/tiiuae/tii-mqtt-server:latest"
 	imageMissionControl             = "ghcr.io/tiiuae/tii-mission-control:latest"
 	imageVideoServer                = "ghcr.io/tiiuae/tii-video-server:latest"
