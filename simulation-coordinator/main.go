@@ -82,6 +82,8 @@ var (
 	defaultSimulationGPUMode = kube.SimulationGPUModeNone
 	defaultExpiryDuration    = 2 * 24 * time.Hour
 	expiryCheckInterval      = time.Hour
+
+	enableAuth = true
 )
 
 func init() {
@@ -119,6 +121,7 @@ func init() {
 	flag.Var(&defaultSimulationGPUMode, "default-gpu-mode", "The default GPU mode for new simulations that don't specify the GPU mode to use")
 	flag.DurationVar(&defaultExpiryDuration, "simulation-expiry-duration", defaultExpiryDuration, "Simulations will be automatically removed after this duration if they have not been interacted with")
 	flag.DurationVar(&expiryCheckInterval, "expiry-check-interval", expiryCheckInterval, "How often simulations are checked for expiration")
+	flag.BoolVar(&enableAuth, "enable-auth", enableAuth, "If true, the API requires authentication using a JWT")
 }
 
 func urlWithAuth(u url.URL) string {
@@ -229,7 +232,7 @@ func main() {
 	}
 
 	router := httprouter.New()
-	registerRoutes(router)
+	registerRoutes(router, enableAuth)
 	router.HandleMethodNotAllowed = true
 	router.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeNotFound(w, "not found", nil)

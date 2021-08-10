@@ -376,7 +376,7 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	droneID := params.ByName("droneID")
 	path := params.ByName("path")
 
-	allowedDeviceID, err := validateAuthHeader(r)
+	allowedDeviceID, err := validateDeviceAuthHeader(r)
 	if err != nil {
 		writeUnauthorized(w, "nonexistent or invalid JWT", err)
 		return
@@ -416,7 +416,7 @@ func signDroneJWT(deviceID string, privateKey []byte) (string, error) {
 	}).SignedString(key)
 }
 
-func validateAuthHeader(r *http.Request) (string, error) {
+func validateDeviceAuthHeader(r *http.Request) (string, error) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	var deviceID string
 	_, err := jwt.ParseWithClaims(token, &deviceIDJWTClaim{}, func(t *jwt.Token) (interface{}, error) {
@@ -444,7 +444,7 @@ func sendCommandHandler(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "body must be valid JSON", err)
 		return
 	}
-	deviceID, err := validateAuthHeader(r)
+	deviceID, err := validateDeviceAuthHeader(r)
 	if err != nil {
 		writeUnauthorized(w, "nonexistent or invalid JWT", err)
 		return

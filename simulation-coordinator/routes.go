@@ -9,26 +9,32 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
-func registerRoutes(router *httprouter.Router) {
+func registerRoutes(router *httprouter.Router, enableAuth bool) {
+	auth := func(h http.Handler) http.Handler {
+		if enableAuth {
+			h = checkSimulationAccess(h)
+		}
+		return h
+	}
 	router.HandlerFunc(http.MethodGet, "/viewers/:viewerClientID", validateViewerClientID)
 	router.HandlerFunc(http.MethodPost, "/commands", sendCommandHandler)
 	router.HandlerFunc(http.MethodGet, "/simulations", getSimulationsHandler)
 	router.HandlerFunc(http.MethodPost, "/simulations", createSimulationHandler)
-	router.HandlerFunc(http.MethodGet, "/simulations/:simulationName", getSimulationHandler)
-	router.HandlerFunc(http.MethodDelete, "/simulations/:simulationName", removeSimulationHandler)
-	router.Handler(http.MethodGet, "/simulations/:simulationName/viewer", refreshSimulationExpiry(startViewerHandler))
-	router.Handler(http.MethodGet, "/simulations/:simulationName/drones", refreshSimulationExpiry(getDronesHandler))
-	router.Handler(http.MethodPost, "/simulations/:simulationName/drones", refreshSimulationExpiry(addDroneHandler))
-	router.Handler(http.MethodPost, "/simulations/:simulationName/drones/:droneID/command", refreshSimulationExpiry(commandDroneHandler))
-	router.HandlerFunc(http.MethodGet, "/simulations/:simulationName/drones/:droneID/logs", droneLogStreamHandler)
-	router.HandlerFunc(http.MethodGet, "/simulations/:simulationName/drones/:droneID/events", droneEventStreamHandler)
-	router.HandlerFunc(http.MethodPost, "/simulations/:simulationName/drones/:droneID/video", droneVideoStreamHandler)
-	router.Handler(http.MethodGet, "/simulations/:simulationName/drones/:droneID/shell", refreshSimulationExpiry(droneShellHandler))
-	router.Handler(http.MethodGet, "/simulations/:simulationName/missions", refreshSimulationExpiry(getMissionsHandler))
-	router.Handler(http.MethodPost, "/simulations/:simulationName/missions", refreshSimulationExpiry(createMissionHandler))
-	router.Handler(http.MethodDelete, "/simulations/:simulationName/missions/:missionSlug", refreshSimulationExpiry(deleteMissionHandler))
-	router.Handler(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/drones", refreshSimulationExpiry(assignDroneHandler))
-	router.Handler(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/backlog", refreshSimulationExpiry(addBacklogItem))
+	router.Handler(http.MethodGet, "/simulations/:simulationName", auth(http.HandlerFunc(getSimulationHandler)))
+	router.Handler(http.MethodDelete, "/simulations/:simulationName", auth(http.HandlerFunc(removeSimulationHandler)))
+	router.Handler(http.MethodGet, "/simulations/:simulationName/viewer", auth(refreshSimulationExpiry(startViewerHandler)))
+	router.Handler(http.MethodGet, "/simulations/:simulationName/drones", auth(refreshSimulationExpiry(getDronesHandler)))
+	router.Handler(http.MethodPost, "/simulations/:simulationName/drones", auth(refreshSimulationExpiry(addDroneHandler)))
+	router.Handler(http.MethodPost, "/simulations/:simulationName/drones/:droneID/command", auth(refreshSimulationExpiry(commandDroneHandler)))
+	router.Handler(http.MethodGet, "/simulations/:simulationName/drones/:droneID/logs", auth(http.HandlerFunc(droneLogStreamHandler)))
+	router.Handler(http.MethodGet, "/simulations/:simulationName/drones/:droneID/events", auth(http.HandlerFunc(droneEventStreamHandler)))
+	router.Handler(http.MethodPost, "/simulations/:simulationName/drones/:droneID/video", auth(http.HandlerFunc(droneVideoStreamHandler)))
+	router.Handler(http.MethodGet, "/simulations/:simulationName/drones/:droneID/shell", auth(refreshSimulationExpiry(droneShellHandler)))
+	router.Handler(http.MethodGet, "/simulations/:simulationName/missions", auth(refreshSimulationExpiry(getMissionsHandler)))
+	router.Handler(http.MethodPost, "/simulations/:simulationName/missions", auth(refreshSimulationExpiry(createMissionHandler)))
+	router.Handler(http.MethodDelete, "/simulations/:simulationName/missions/:missionSlug", auth(refreshSimulationExpiry(deleteMissionHandler)))
+	router.Handler(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/drones", auth(refreshSimulationExpiry(assignDroneHandler)))
+	router.Handler(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/backlog", auth(refreshSimulationExpiry(addBacklogItem)))
 	router.HandlerFunc(http.MethodGet, "/events/:droneID/*path", eventsHandler)
 	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
 }

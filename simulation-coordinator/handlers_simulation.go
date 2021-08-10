@@ -43,6 +43,8 @@ var errSimDoesNotExist = errors.New("simulation doesn't exist")
 
 const minDroneRecordSizeThreshold = 100_000
 
+const simulationAdminRole = "simulation-admin"
+
 func getSimulationType(ctx context.Context, simulationName string) (kube.SimulationType, error) {
 	ns, err := getKube().CoreV1().Namespaces().Get(ctx, simulationName, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
@@ -65,8 +67,12 @@ func getSimulationType(ctx context.Context, simulationName string) (kube.Simulat
 // GET /simulations
 func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
-	kube := getKube()
-	namespaces, err := kube.CoreV1().Namespaces().List(c, metav1.ListOptions{LabelSelector: "dronsole-type=simulation"})
+	claims, err := getClaimsFromRequest(r)
+	if err != nil {
+		writeUnauthorized(w, "invalid auth token", err)
+		return
+	}
+	namespaces, err := getKube().CoreV1().Namespaces().List(c, metav1.ListOptions{LabelSelector: "dronsole-type=simulation"})
 	if err != nil {
 		writeError(w, "Could not get simulations", err, http.StatusInternalServerError)
 		return
@@ -79,16 +85,25 @@ func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt time.Time `json:"created_at"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	response := make([]resp, len(namespaces.Items))
-	for i, ns := range namespaces.Items {
+	var response []resp
+	for _, ns := range namespaces.Items {
+		ownersData := []byte(ns.Annotations["dronsole-owners"])
+		var owners kube.StringSet
+		if err = json.Unmarshal(ownersData, &owners); err != nil {
+			log.Printf("failed to parse owners for simulation %s: %v", ns.Name, err)
+			continue
+		}
+		if !claims.hasAccess(owners) {
+			continue
+		}
 		expires, _ := time.Parse(time.RFC3339, ns.Annotations["dronsole-expiration-timestamp"])
-		response[i] = resp{
+		response = append(response, resp{
 			Name:      ns.Name,
 			Phase:     fmt.Sprintf("%s", ns.Status.Phase),
 			Type:      ns.Labels["dronsole-simulation-type"],
 			CreatedAt: ns.CreationTimestamp.Time,
 			ExpiresAt: expires,
-		}
+		})
 	}
 	writeJSON(w, obj{"simulations": response})
 }
@@ -116,6 +131,11 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 
 // POST /simulations
 func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
+	claims, err := getClaimsFromRequest(r)
+	if err != nil {
+		writeUnauthorized(w, "invalid Authorization header", err)
+		return
+	}
 	c := r.Context()
 	var request struct {
 		Name                 string `json:"name"`
@@ -125,7 +145,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		MissionDataDirectory string `json:"mission_data_directory"`
 		GPUMode              string `json:"gpu_mode"`
 	}
-	err := json.NewDecoder(r.Body).Decode(&request)
+	err = json.NewDecoder(r.Body).Decode(&request)
 	r.Body.Close()
 	if err != nil {
 		writeBadRequest(w, "Could not unmarshal simulation request", err)
@@ -160,6 +180,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		ID:             simulationID,
 		SimType:        simType,
 		ExpiryDuration: defaultExpiryDuration,
+		Owners:         []string{claims.Subject},
 	}
 	ns, err := kube.CreateNamespace(c, &opts, clientset)
 	if err != nil {
@@ -1045,4 +1066,66 @@ func refreshSimulationExpiry(next http.HandlerFunc) http.Handler {
 		}
 		next(w, r)
 	})
+}
+
+type userJWTClaims struct {
+	jwt.StandardClaims
+	Roles []string
+}
+
+func (c *userJWTClaims) hasAccess(owners kube.StringSet) bool {
+	if owners[c.Subject] {
+		return true
+	}
+	for _, role := range c.Roles {
+		if owners[role] || role == simulationAdminRole {
+			return true
+		}
+	}
+	return false
+}
+
+func checkSimulationAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params := httprouter.ParamsFromContext(r.Context())
+		simulationName := params.ByName("simulationName")
+		claims, err := getClaimsFromRequest(r)
+		if err != nil {
+			writeUnauthorized(w, "invalid Authorization header", err)
+			return
+		}
+		owners, err := kube.GetSimulationOwners(r.Context(), simulationName, getKube())
+		if errors.Is(err, kube.ErrSimulationDoesntExist) {
+			writeNotFound(w, "simulation doesn't exist", nil)
+		} else if err != nil {
+			writeServerError(w, "failed to access simulation", nil)
+		} else if claims.hasAccess(owners) {
+			next.ServeHTTP(w, r)
+		} else {
+			writeNotFound(w, "simulation doesn't exist", nil)
+		}
+	})
+}
+
+func getClaimsFromRequest(r *http.Request) (*userJWTClaims, error) {
+	if !enableAuth {
+		return &userJWTClaims{
+			StandardClaims: jwt.StandardClaims{
+				Subject: "simulation-coordinator",
+			},
+			Roles: []string{simulationAdminRole},
+		}, nil
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	var claims userJWTClaims
+	var parser jwt.Parser
+	// The token has already been validated and verified by firebase-auth-sidecar.
+	parser.SkipClaimsValidation = true
+	if _, _, err := parser.ParseUnverified(token, &claims); err != nil {
+		return nil, err
+	}
+	if claims.Subject == "" {
+		return nil, errors.New("token is missing Subject field")
+	}
+	return &claims, nil
 }

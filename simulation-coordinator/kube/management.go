@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -141,6 +142,7 @@ type CreateNamespaceOptions struct {
 	Name, ID       string
 	SimType        SimulationType
 	ExpiryDuration time.Duration
+	Owners         []string
 }
 
 func CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
@@ -150,6 +152,10 @@ func CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions, clientse
 	}
 	if err != nil {
 		log.Println("errors occurred when searching for a free port range:", err)
+	}
+	owners, err := json.Marshal(opts.Owners)
+	if err != nil {
+		return nil, err
 	}
 	var expiryTime string
 	if opts.ExpiryDuration == 0 {
@@ -169,6 +175,7 @@ func CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions, clientse
 				"dronsole-expiry-duration":      opts.ExpiryDuration.String(),
 				"dronsole-simulation-id":        opts.ID,
 				"dronsole-port-range-start":     strconv.Itoa(port),
+				"dronsole-owners":               string(owners),
 			},
 		},
 	}
@@ -183,6 +190,36 @@ func GetSimulation(ctx context.Context, name string, clientset *kubernetes.Clien
 		return nil, err
 	}
 	return ns, nil
+}
+
+type StringSet map[string]bool
+
+func (s *StringSet) UnmarshalJSON(data []byte) error {
+	*s = StringSet{}
+	if len(data) == 0 {
+		return nil
+	}
+	var owners []string
+	if err := json.Unmarshal(data, &owners); err != nil {
+		return err
+	}
+	for _, owner := range owners {
+		(*s)[owner] = true
+	}
+	return nil
+}
+
+func GetSimulationOwners(ctx context.Context, name string, clientset *kubernetes.Clientset) (StringSet, error) {
+	sim, err := GetSimulation(ctx, name, clientset)
+	if err != nil {
+		return nil, err
+	}
+	var owners StringSet
+	err = json.Unmarshal([]byte(sim.Annotations["dronsole-owners"]), &owners)
+	if err != nil {
+		return nil, err
+	}
+	return owners, nil
 }
 
 func RemoveSimulation(ctx context.Context, name string, clientset *kubernetes.Clientset) error {
