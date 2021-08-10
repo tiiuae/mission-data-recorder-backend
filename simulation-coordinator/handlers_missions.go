@@ -26,7 +26,7 @@ func init() {
 }
 
 func getMissionsURL(ctx context.Context, sim string) (*url.URL, error) {
-	simType, err := getSimulationType(ctx, sim)
+	simType, err := client.GetSimulationType(ctx, sim)
 	if err != nil {
 		return nil, err
 	}

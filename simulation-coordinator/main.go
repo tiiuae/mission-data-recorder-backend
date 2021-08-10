@@ -31,7 +31,12 @@ var (
 	imageWebBackend                 = "ghcr.io/tiiuae/tii-web-backend:latest"
 	imageMissionDataRecorderBackend = "ghcr.io/tiiuae/tii-mission-data-recorder-backend:latest"
 
-	defaultPullPolicy = pullPolicyValue{value: &kube.DefaultPullPolicy}
+	defaultPullPolicy = pullPolicyValue{
+		value: func() *v1.PullPolicy {
+			p := v1.PullIfNotPresent
+			return &p
+		}(),
+	}
 )
 
 var (
@@ -193,6 +198,13 @@ func main() {
 		log.Fatalln("Environment variable SIMULATION_COORDINATOR_NAMESPACE is not defined")
 	}
 
+	var err error
+	client, err = kube.NewInClusterConfig()
+	if err != nil {
+		log.Fatalln("failed to create Kubernetes client:", err)
+	}
+	client.PullPolicy = *defaultPullPolicy.value
+
 	if cloudMode {
 		var err error
 		subMan, err = newSubscriptionManager(ctx)
@@ -285,9 +297,8 @@ func isValidOrigin(r *http.Request) bool {
 }
 
 func expiryWatcher(ctx context.Context, interval time.Duration) error {
-	clientset := getKube()
 	for {
-		if err := kube.RemoveExpiredSimulations(ctx, clientset); err != nil {
+		if err := client.RemoveExpiredSimulations(ctx); err != nil {
 			log.Println("an error occurred while removing expired simulations:", err)
 		}
 		select {

@@ -32,37 +32,17 @@ import (
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubectl/pkg/scheme"
 	"nhooyr.io/websocket"
 )
 
-var errSimDoesNotExist = errors.New("simulation doesn't exist")
+var client *kube.Client
 
 const minDroneRecordSizeThreshold = 100_000
 
 const simulationAdminRole = "simulation-admin"
-
-func getSimulationType(ctx context.Context, simulationName string) (kube.SimulationType, error) {
-	ns, err := getKube().CoreV1().Namespaces().Get(ctx, simulationName, metav1.GetOptions{})
-	if k8serrors.IsNotFound(err) {
-		return "", errSimDoesNotExist
-	} else if err != nil {
-		return "", err
-	}
-	simType := ns.Labels["dronsole-simulation-type"]
-	switch kube.SimulationType(simType) {
-	case kube.SimulationGlobal:
-	case kube.SimulationStandalone:
-	case "":
-		return "", errSimDoesNotExist
-	default:
-		return "", errors.New("invalid simulation type: " + simType)
-	}
-	return kube.SimulationType(simType), nil
-}
 
 // GET /simulations
 func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
@@ -72,38 +52,16 @@ func getSimulationsHandler(w http.ResponseWriter, r *http.Request) {
 		writeUnauthorized(w, "invalid auth token", err)
 		return
 	}
-	namespaces, err := getKube().CoreV1().Namespaces().List(c, metav1.ListOptions{LabelSelector: "dronsole-type=simulation"})
+	sims, err := client.GetSimulations(c)
 	if err != nil {
-		writeError(w, "Could not get simulations", err, http.StatusInternalServerError)
+		writeServerError(w, "Could not get simulations", err)
 		return
 	}
-
-	type resp struct {
-		Name      string    `json:"name"`
-		Phase     string    `json:"phase"`
-		Type      string    `json:"type"`
-		CreatedAt time.Time `json:"created_at"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
-	var response []resp
-	for _, ns := range namespaces.Items {
-		ownersData := []byte(ns.Annotations["dronsole-owners"])
-		var owners kube.StringSet
-		if err = json.Unmarshal(ownersData, &owners); err != nil {
-			log.Printf("failed to parse owners for simulation %s: %v", ns.Name, err)
-			continue
+	var response []kube.Simulation
+	for _, sim := range sims {
+		if claims.hasAccess(sim.Owners) {
+			response = append(response, sim)
 		}
-		if !claims.hasAccess(owners) {
-			continue
-		}
-		expires, _ := time.Parse(time.RFC3339, ns.Annotations["dronsole-expiration-timestamp"])
-		response = append(response, resp{
-			Name:      ns.Name,
-			Phase:     fmt.Sprintf("%s", ns.Status.Phase),
-			Type:      ns.Labels["dronsole-simulation-type"],
-			CreatedAt: ns.CreationTimestamp.Time,
-			ExpiresAt: expires,
-		})
 	}
 	writeJSON(w, obj{"simulations": response})
 }
@@ -112,7 +70,7 @@ func getSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(r.Context())
 	simulationName := params.ByName("simulationName")
 
-	simType, err := getSimulationType(r.Context(), simulationName)
+	simType, err := client.GetSimulationType(r.Context(), simulationName)
 	if err != nil {
 		writeServerError(w, "failed to get simulation type", err)
 		return
@@ -163,9 +121,8 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	clientset := getKube()
 	if request.Name == "" {
-		request.Name = generateSimulationName(c, clientset)
+		request.Name = generateSimulationName(c)
 	}
 	simulationID := generateSimulationID(request.Name)
 
@@ -182,7 +139,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		ExpiryDuration: defaultExpiryDuration,
 		Owners:         []string{claims.Subject},
 	}
-	ns, err := kube.CreateNamespace(c, &opts, clientset)
+	ns, err := client.CreateNamespace(c, &opts)
 	if err != nil {
 		writeError(w, "Could not create namespace for the simulation", err, http.StatusInternalServerError)
 		return
@@ -194,31 +151,31 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 			writeServerError(w, "failed to create simulation", creationError)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			err := clientset.CoreV1().Namespaces().Delete(ctx, request.Name, *metav1.NewDeleteOptions(10))
+			err := client.Clientset.CoreV1().Namespaces().Delete(ctx, request.Name, *metav1.NewDeleteOptions(10))
 			if err != nil {
 				log.Println("Unable to delete namespace:", err)
 			}
 		}
 	}()
-	err = kube.CopySecret(c, currentNamespace, dockerConfigSecretName, ns.Name, "dockerconfigjson", clientset)
+	err = client.CopySecret(c, currentNamespace, dockerConfigSecretName, ns.Name, "dockerconfigjson")
 	if err != nil {
 		creationError = fmt.Errorf("Could not copy Docker configuration for the simulation: %w", err)
 		return
 	}
 
-	err = kube.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, cloudMode, clientset)
+	err = client.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, cloudMode)
 	if err != nil {
 		creationError = fmt.Errorf("failed to create gzserver: %w", err)
 		return
 	}
 
 	if request.Standalone {
-		err = kube.CreateMQTT(c, request.Name, imageMQTTServer, !cloudMode, clientset)
+		err = client.CreateMQTT(c, request.Name, imageMQTTServer, !cloudMode)
 		if err != nil {
 			creationError = fmt.Errorf("error creating mqtt-server deployment: %w", err)
 			return
 		}
-		err = kube.CreateMissionControl(c, request.Name, imageMissionControl, clientset)
+		err = client.CreateMissionControl(c, request.Name, imageMissionControl)
 		if err != nil {
 			creationError = fmt.Errorf("error creating mission-control deployment: %w", err)
 			return
@@ -228,17 +185,17 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 			creationError = fmt.Errorf("error generating video-server certificates: %w", err)
 			return
 		}
-		err = kube.CreateVideoServer(c, request.Name, imageVideoServer, videoCert, videoKey, clientset)
+		err = client.CreateVideoServer(c, request.Name, imageVideoServer, videoCert, videoKey)
 		if err != nil {
 			creationError = fmt.Errorf("error creating video-server deployment: %w", err)
 			return
 		}
-		err = kube.CreateVideoMultiplexer(c, request.Name, imageVideoMultiplexer, clientset)
+		err = client.CreateVideoMultiplexer(c, request.Name, imageVideoMultiplexer)
 		if err != nil {
 			creationError = fmt.Errorf("error creating video-multiplexer deployment: %w", err)
 			return
 		}
-		err = kube.CreateWebBackend(c, request.Name, imageWebBackend, clientset)
+		err = client.CreateWebBackend(c, request.Name, imageWebBackend)
 		if err != nil {
 			creationError = fmt.Errorf("error creating web-backend deployment: %w", err)
 			return
@@ -259,7 +216,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 				DataObjectPrefix: simulationID,
 			}
 		}
-		err = kube.CreateMissionDataRecorderBackend(c, clientset, opts)
+		err = client.CreateMissionDataRecorderBackend(c, opts)
 		if err != nil {
 			creationError = fmt.Errorf("error creating mission-data-recorder-backend: %w", err)
 			return
@@ -304,7 +261,7 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
 
-	err := kube.RemoveSimulation(c, simulationName, getKube())
+	err := client.RemoveSimulation(c, simulationName)
 	if errors.Is(err, kube.ErrSimulationDoesntExist) {
 		writeNotFound(w, "Simulation doesn't exist", nil)
 	} else if err != nil {
@@ -319,13 +276,12 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
-	clientset := getKube()
-	simCoordSvc, err := clientset.CoreV1().Services(currentNamespace).Get(c, "simulation-coordinator-svc", metav1.GetOptions{})
+	simCoordSvc, err := client.Clientset.CoreV1().Services(currentNamespace).Get(c, "simulation-coordinator-svc", metav1.GetOptions{})
 	if err != nil {
 		writeServerError(w, "failed to get simulation coordinator port", err)
 		return
 	}
-	err = kube.CreateViewer(
+	err = client.CreateViewer(
 		c,
 		simulationName,
 		imageGZWeb,
@@ -335,7 +291,6 @@ func startViewerHandler(w http.ResponseWriter, r *http.Request) {
 			":",
 			simCoordSvc.Spec.Ports[0].Port,
 		),
-		clientset,
 	)
 	if err != nil {
 		writeServerError(w, "Unable to create viewer", err)
@@ -411,7 +366,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		if !creationSucceeded {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			err := kube.DeleteDrone(ctx, simulationName, request.DroneID, getKube())
+			err := client.DeleteDrone(ctx, simulationName, request.DroneID)
 			if err != nil {
 				log.Println("Unable to delete drone:", err)
 			}
@@ -419,8 +374,8 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	switch request.Location {
 	case "cluster":
-		simType, err := getSimulationType(c, simulationName)
-		if errors.Is(err, errSimDoesNotExist) {
+		simType, err := client.GetSimulationType(c, simulationName)
+		if errors.Is(err, kube.ErrSimulationDoesntExist) {
 			writeNotFound(w, "simulation doesn't exist", nil)
 			return
 		} else if err != nil {
@@ -468,7 +423,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			opts.MQTTBrokerAddress = "tcp://mqtt-server-svc:8883"
-			videoSvc, err := getKube().CoreV1().Services(simulationName).Get(c, "video-server-svc", metav1.GetOptions{})
+			videoSvc, err := client.Clientset.CoreV1().Services(simulationName).Get(c, "video-server-svc", metav1.GetOptions{})
 			if err != nil {
 				writeServerError(w, "failed to get video server port", err)
 				return
@@ -487,7 +442,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		opts.DeviceID = request.DroneID
 		opts.PrivateKey = request.PrivateKey
-		err = kube.CreateDrone(c, getKube(), opts)
+		err = client.CreateDrone(c, opts)
 		if err != nil {
 			if errors.Is(err, kube.ErrDroneExists) {
 				creationSucceeded = true
@@ -635,19 +590,6 @@ func generateDroneID(c context.Context, simulationName string) (string, error) {
 	return "", errors.New("could not generate unique drone id in 20 tries")
 }
 
-func isDroneIDAvailable(c context.Context, clientset *kubernetes.Clientset, simulationName string, droneID string) bool {
-	drones, err := getDrones(c, simulationName)
-	if err != nil {
-		return false
-	}
-	for _, d := range drones {
-		if d.DeviceID == droneID {
-			return false
-		}
-	}
-	return true
-}
-
 type drone struct {
 	DeviceID      string `json:"device_id"`
 	DroneLocation string `json:"drone_location"`
@@ -663,7 +605,7 @@ func getDrones(ctx context.Context, simulationName string) ([]drone, error) {
 }
 
 func waitHostPort(c context.Context, namespace, serviceName string) (string, error) {
-	kube := getKube()
+	kube := client.Clientset
 	for {
 		lb, err := kube.CoreV1().Services(namespace).Get(c, serviceName, metav1.GetOptions{})
 		if err != nil {
@@ -684,9 +626,8 @@ func waitHostPort(c context.Context, namespace, serviceName string) (string, err
 }
 
 func waitDeploymentAvailable(ctx context.Context, namespace, name string) error {
-	clientset := getKube()
 	for {
-		dep, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		dep, err := client.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err == nil {
 			if dep.Status.AvailableReplicas > 0 {
 				return nil
@@ -702,9 +643,8 @@ func waitDeploymentAvailable(ctx context.Context, namespace, name string) error 
 	}
 }
 
-func getShortestUniqueSimulationName(c context.Context, kube *kubernetes.Clientset, names []string) string {
-
-	namespaces, err := kube.CoreV1().Namespaces().List(c, metav1.ListOptions{LabelSelector: "dronsole-type=simulation"})
+func getShortestUniqueSimulationName(c context.Context, names []string) string {
+	sims, err := client.GetSimulations(c)
 	if err != nil {
 		panic(err)
 	}
@@ -713,8 +653,8 @@ func getShortestUniqueSimulationName(c context.Context, kube *kubernetes.Clients
 		for _, name := range names {
 			nameCandidate := name[:i]
 			found := true
-			for _, ns := range namespaces.Items {
-				if strings.HasPrefix(ns.Name, nameCandidate) {
+			for _, sim := range sims {
+				if strings.HasPrefix(sim.Name, nameCandidate) {
 					found = false
 					break
 				}
@@ -727,13 +667,13 @@ func getShortestUniqueSimulationName(c context.Context, kube *kubernetes.Clients
 	panic("Could not find unique name")
 }
 
-func generateSimulationName(c context.Context, kube *kubernetes.Clientset) string {
+func generateSimulationName(c context.Context) string {
 	names := make([]string, 20)
 	for i := 0; i < 20; i++ {
 		names[i] = fmt.Sprintf("sim-%s", uuid.New().String())
 	}
 
-	return getShortestUniqueSimulationName(c, kube, names)
+	return getShortestUniqueSimulationName(c, names)
 }
 
 func generateSimulationID(name string) string {
@@ -772,7 +712,7 @@ func commandDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	simType, err := getSimulationType(c, simulationName)
+	simType, err := client.GetSimulationType(c, simulationName)
 	if err != nil {
 		writeServerError(w, "failed to get simulation type", err)
 		return
@@ -801,26 +741,15 @@ func droneLogStreamHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
-	clientset := getKube()
 
-	pods, err := clientset.CoreV1().Pods(simulationName).List(c, metav1.ListOptions{LabelSelector: "drone-device-id=" + droneID})
-	if err != nil {
-		writeServerError(w, "failed to get drone", err)
-		return
-	}
-	if len(pods.Items) != 1 {
+	logs, err := client.GetDroneLogs(c, simulationName, droneID)
+	if errors.Is(err, kube.ErrNoSuchDrone) {
 		writeNotFound(w, "the requested drone does not exist", nil)
-		return
-	}
-	req := clientset.CoreV1().Pods(simulationName).GetLogs(pods.Items[0].Name, &v1.PodLogOptions{
-		Follow: false,
-	})
-	result, err := req.DoRaw(c)
-	if err != nil {
+	} else if err != nil {
 		writeServerError(w, "failed to retreive logs", err)
-		return
+	} else if _, err := w.Write(logs); err != nil {
+		log.Println("failed to send logs to client:", err)
 	}
-	w.Write(result)
 }
 
 func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
@@ -850,7 +779,7 @@ func droneEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 		req.Path = req.Path + "/"
 	}
 
-	simType, err := getSimulationType(c, simulationName)
+	simType, err := client.GetSimulationType(c, simulationName)
 	if err != nil {
 		writeServerError(w, "failed to get simulation type", err)
 		return
@@ -883,7 +812,7 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
 
-	simType, err := getSimulationType(ctx, simulationName)
+	simType, err := client.GetSimulationType(ctx, simulationName)
 	if err != nil {
 		writeServerError(w, "failed to get simulation type", err)
 		return
@@ -929,7 +858,7 @@ func droneShellHandler(w http.ResponseWriter, r *http.Request) {
 	simulationName := params.ByName("simulationName")
 	droneID := params.ByName("droneID")
 
-	podName, err := kube.GetDronePodName(ctx, simulationName, droneID, getKube())
+	podName, err := client.GetDronePodName(ctx, simulationName, droneID)
 	if errors.Is(err, kube.ErrNoSuchDrone) {
 		writeNotFound(w, "the drone does not exist", nil)
 		return
@@ -978,7 +907,7 @@ func (s *remoteShell) Start(ctx context.Context, ns, pod string) (err error) {
 	inReader, s.inWriter = io.Pipe()
 	defer inReader.Close()
 	defer s.inWriter.Close()
-	req := getKube().CoreV1().RESTClient().Post().
+	req := client.Clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod).
 		Namespace(ns).
@@ -1060,7 +989,7 @@ func refreshSimulationExpiry(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		params := httprouter.ParamsFromContext(r.Context())
 		name := params.ByName("simulationName")
-		err := kube.RefreshSimulationExpiryTime(r.Context(), name, getKube())
+		err := client.RefreshSimulationExpiryTime(r.Context(), name)
 		if err != nil {
 			log.Printf(`an error occurred when refreshing expiry time of simulation "%s": %v`, name, err)
 		}
@@ -1094,7 +1023,7 @@ func checkSimulationAccess(next http.Handler) http.Handler {
 			writeUnauthorized(w, "invalid Authorization header", err)
 			return
 		}
-		owners, err := kube.GetSimulationOwners(r.Context(), simulationName, getKube())
+		owners, err := client.GetSimulationOwners(r.Context(), simulationName)
 		if errors.Is(err, kube.ErrSimulationDoesntExist) {
 			writeNotFound(w, "simulation doesn't exist", nil)
 		} else if err != nil {

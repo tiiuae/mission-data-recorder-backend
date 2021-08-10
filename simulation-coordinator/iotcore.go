@@ -19,7 +19,6 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"google.golang.org/api/cloudiot/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"nhooyr.io/websocket"
 )
 
@@ -134,11 +133,11 @@ func (p *cloudiotAPI) GetDeviceCredentials(ctx context.Context, deviceID, alg st
 }
 
 func newDroneTokenHeader(ctx context.Context, simulation, deviceID string) (http.Header, error) {
-	secret, err := getKube().CoreV1().Secrets(simulation).Get(ctx, "drone-"+deviceID+"-secret", metav1.GetOptions{})
+	key, err := client.GetDroneIdentityKey(ctx, simulation, deviceID)
 	if err != nil {
 		return nil, err
 	}
-	signedToken, err := signDroneJWT(deviceID, secret.Data["DRONE_IDENTITY_KEY"])
+	signedToken, err := signDroneJWT(deviceID, key)
 	if err != nil {
 		return nil, err
 	}

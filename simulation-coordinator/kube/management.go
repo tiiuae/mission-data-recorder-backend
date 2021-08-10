@@ -20,9 +20,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
-
-var DefaultPullPolicy = v1.PullIfNotPresent
 
 const nonExpiringDuration = 100 * 365 * 24 * time.Hour
 
@@ -81,8 +80,27 @@ const (
 	mqttServerPortOffset  = 2
 )
 
-func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string, clientset *kubernetes.Clientset) error {
-	secret, err := clientset.CoreV1().Secrets(fromNamespace).Get(ctx, fromName, metav1.GetOptions{})
+type Client struct {
+	PullPolicy v1.PullPolicy
+
+	Clientset *kubernetes.Clientset
+}
+
+func NewInClusterConfig() (*Client, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, err
+	}
+	c := &Client{PullPolicy: v1.PullIfNotPresent}
+	c.Clientset, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *Client) CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string) error {
+	secret, err := c.Clientset.CoreV1().Secrets(fromNamespace).Get(ctx, fromName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -94,12 +112,12 @@ func CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toNam
 		Type: secret.Type,
 		Data: secret.Data,
 	}
-	_, err = clientset.CoreV1().Secrets(toNamespace).Create(ctx, secret, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Secrets(toNamespace).Create(ctx, secret, metav1.CreateOptions{})
 	return err
 }
 
-func getPortRange(ctx context.Context, namespace string, clientset *kubernetes.Clientset) (int32, error) {
-	ns, err := clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+func (c *Client) getPortRange(ctx context.Context, namespace string) (int32, error) {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
 	if err != nil {
 		return 0, err
 	}
@@ -110,8 +128,8 @@ func getPortRange(ctx context.Context, namespace string, clientset *kubernetes.C
 	return int32(p), nil
 }
 
-func getFirstFreePortRange(ctx context.Context, clientset *kubernetes.Clientset) (int, error) {
-	nss, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+func (c *Client) getFirstFreePortRange(ctx context.Context) (int, error) {
+	nss, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return 0, err
 	}
@@ -138,6 +156,15 @@ func getFirstFreePortRange(ctx context.Context, clientset *kubernetes.Clientset)
 	return current, errs.ErrorOrNil()
 }
 
+type Simulation struct {
+	Name      string    `json:"name"`
+	Phase     string    `json:"phase"`
+	Type      string    `json:"type"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Owners    StringSet `json:"-"`
+}
+
 type CreateNamespaceOptions struct {
 	Name, ID       string
 	SimType        SimulationType
@@ -145,8 +172,8 @@ type CreateNamespaceOptions struct {
 	Owners         []string
 }
 
-func CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
-	port, err := getFirstFreePortRange(ctx, clientset)
+func (c *Client) CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions) (*v1.Namespace, error) {
+	port, err := c.getFirstFreePortRange(ctx)
 	if port == 0 {
 		return nil, fmt.Errorf("failed to get a free port range: %w", err)
 	}
@@ -179,17 +206,45 @@ func CreateNamespace(ctx context.Context, opts *CreateNamespaceOptions, clientse
 			},
 		},
 	}
-	return clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+	return c.Clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
 }
 
-func GetSimulation(ctx context.Context, name string, clientset *kubernetes.Clientset) (*v1.Namespace, error) {
-	ns, err := clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+func (c *Client) GetSimulation(ctx context.Context, name string) (*v1.Namespace, error) {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) || (err == nil && ns.Labels["dronsole-type"] != "simulation") {
 		return nil, ErrSimulationDoesntExist
 	} else if err != nil {
 		return nil, err
 	}
 	return ns, nil
+}
+
+func (c *Client) GetSimulations(ctx context.Context) ([]Simulation, error) {
+	ns, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
+		LabelSelector: "dronsole-type=simulation",
+	})
+	if err != nil {
+		return nil, err
+	}
+	sims := make([]Simulation, len(ns.Items))
+	for i, n := range ns.Items {
+		sims[i] = Simulation{
+			Name:      n.Name,
+			Phase:     string(n.Status.Phase),
+			Type:      n.Labels["dronsole-simulation-type"],
+			CreatedAt: n.CreationTimestamp.Time,
+			Owners:    StringSet{},
+		}
+		err = json.Unmarshal([]byte(n.Annotations["dronsole-owners"]), &sims[i].Owners)
+		if err != nil {
+			log.Printf("failed to parse owners for simulation %s: %v", n.Name, err)
+		}
+		sims[i].ExpiresAt, err = time.Parse(time.RFC3339, n.Annotations["dronsole-expiration-timestamp"])
+		if err != nil {
+			log.Printf("an error occurred when parsing expiration timestamp for simulation %s: %v", n.Name, err)
+		}
+	}
+	return sims, nil
 }
 
 type StringSet map[string]bool
@@ -209,8 +264,8 @@ func (s *StringSet) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func GetSimulationOwners(ctx context.Context, name string, clientset *kubernetes.Clientset) (StringSet, error) {
-	sim, err := GetSimulation(ctx, name, clientset)
+func (c *Client) GetSimulationOwners(ctx context.Context, name string) (StringSet, error) {
+	sim, err := c.GetSimulation(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -222,18 +277,35 @@ func GetSimulationOwners(ctx context.Context, name string, clientset *kubernetes
 	return owners, nil
 }
 
-func RemoveSimulation(ctx context.Context, name string, clientset *kubernetes.Clientset) error {
-	ns, err := clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+func (c *Client) GetSimulationType(ctx context.Context, simulationName string) (SimulationType, error) {
+	ns, err := c.GetSimulation(ctx, simulationName)
+	if k8serrors.IsNotFound(err) {
+		return "", err
+	}
+	simType := ns.Labels["dronsole-simulation-type"]
+	switch SimulationType(simType) {
+	case SimulationGlobal:
+	case SimulationStandalone:
+	case "":
+		return "", ErrSimulationDoesntExist
+	default:
+		return "", errors.New("invalid simulation type: " + simType)
+	}
+	return SimulationType(simType), nil
+}
+
+func (c *Client) RemoveSimulation(ctx context.Context, name string) error {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) || (err == nil && ns.Labels["dronsole-type"] != "simulation") {
 		return ErrSimulationDoesntExist
 	} else if err != nil {
 		return err
 	}
-	return clientset.CoreV1().Namespaces().Delete(ctx, name, *metav1.NewDeleteOptions(5))
+	return c.Clientset.CoreV1().Namespaces().Delete(ctx, name, *metav1.NewDeleteOptions(5))
 }
 
-func RefreshSimulationExpiryTime(ctx context.Context, name string, clientset *kubernetes.Clientset) error {
-	ns, err := clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+func (c *Client) RefreshSimulationExpiryTime(ctx context.Context, name string) error {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) || (err == nil && ns.Labels["dronsole-type"] != "simulation") {
 		return ErrSimulationDoesntExist
 	} else if err != nil {
@@ -247,12 +319,12 @@ func RefreshSimulationExpiryTime(ctx context.Context, name string, clientset *ku
 		return nil
 	}
 	ns.Annotations["dronsole-expiration-timestamp"] = currentExpiryTime(expiryDuration)
-	_, err = clientset.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{})
+	_, err = c.Clientset.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{})
 	return err
 }
 
-func RemoveExpiredSimulations(ctx context.Context, clientset *kubernetes.Clientset) error {
-	sims, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
+func (c *Client) RemoveExpiredSimulations(ctx context.Context) error {
+	sims, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
 		LabelSelector: "dronsole-type = simulation",
 	})
 	if err != nil {
@@ -269,7 +341,7 @@ func RemoveExpiredSimulations(ctx context.Context, clientset *kubernetes.Clients
 				errs = multierror.Append(errs, err)
 			} else if now.After(expiryTime) {
 				errs = multierror.Append(errs,
-					clientset.CoreV1().Namespaces().Delete(ctx, sim.Name, deleteOpts),
+					c.Clientset.CoreV1().Namespaces().Delete(ctx, sim.Name, deleteOpts),
 				)
 			}
 		}
@@ -277,7 +349,7 @@ func RemoveExpiredSimulations(ctx context.Context, clientset *kubernetes.Clients
 	return errs.ErrorOrNil()
 }
 
-func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode bool, clientset *kubernetes.Clientset) error {
+func (c *Client) CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode bool) error {
 	// Volume definitions
 	volumeGazeboData := v1.Volume{
 		Name: "gazebo-data-vol",
@@ -419,15 +491,15 @@ func CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage str
 			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
-	_, err := clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
-	_, err = clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{})
 	return err
 }
 
-func CreateMQTT(c context.Context, namespace string, image string, loadBalancer bool, clientset *kubernetes.Clientset) error {
+func (c *Client) CreateMQTT(ctx context.Context, namespace string, image string, loadBalancer bool) error {
 
 	mqttDeployment := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -450,7 +522,7 @@ func CreateMQTT(c context.Context, namespace string, image string, loadBalancer 
 						{
 							Name:            "mqtt-server",
 							Image:           image,
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -461,7 +533,7 @@ func CreateMQTT(c context.Context, namespace string, image string, loadBalancer 
 		},
 	}
 
-	_, err := clientset.AppsV1().Deployments(namespace).Create(c, &mqttDeployment, metav1.CreateOptions{})
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, &mqttDeployment, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating mqtt-server deployment %w", err)
 	}
@@ -478,12 +550,12 @@ func CreateMQTT(c context.Context, namespace string, image string, loadBalancer 
 		},
 	}
 
-	_, err = clientset.CoreV1().Services(namespace).Create(c, &mqttService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, &mqttService, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating mqtt-server service %w", err)
 	}
 	if loadBalancer {
-		portRange, err := getPortRange(c, namespace, clientset)
+		portRange, err := c.getPortRange(ctx, namespace)
 		if err != nil {
 			return err
 		}
@@ -500,7 +572,7 @@ func CreateMQTT(c context.Context, namespace string, image string, loadBalancer 
 				Type:     v1.ServiceTypeLoadBalancer,
 			},
 		}
-		_, err = clientset.CoreV1().Services(namespace).Create(c, publicService, metav1.CreateOptions{})
+		_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, publicService, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("Error creating mqtt-server public service %w", err)
 		}
@@ -508,7 +580,7 @@ func CreateMQTT(c context.Context, namespace string, image string, loadBalancer 
 	return nil
 }
 
-func CreateMissionControl(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
+func (c *Client) CreateMissionControl(ctx context.Context, namespace string, image string) error {
 
 	missionControlDeployment := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -532,7 +604,7 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 							Name:            "mission-control",
 							Image:           image,
 							Args:            []string{"mission-control-svc:2222", "tcp://mqtt-server-svc:8883"},
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -543,7 +615,7 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 		},
 	}
 
-	_, err := clientset.AppsV1().Deployments(namespace).Create(c, &missionControlDeployment, metav1.CreateOptions{})
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, &missionControlDeployment, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Error creating misison-control deployment %v", err)
 		return err
@@ -569,7 +641,7 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 		},
 	}
 
-	_, err = clientset.CoreV1().Services(namespace).Create(c, &missionControlService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, &missionControlService, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Error creating mission-control service %v", err)
 		return err
@@ -578,8 +650,8 @@ func CreateMissionControl(c context.Context, namespace string, image string, cli
 	return nil
 }
 
-func CreateVideoServer(c context.Context, namespace, image, cert, key string, clientset *kubernetes.Clientset) error {
-	portRange, err := getPortRange(c, namespace, clientset)
+func (c *Client) CreateVideoServer(ctx context.Context, namespace, image, cert, key string) error {
+	portRange, err := c.getPortRange(ctx, namespace)
 	if err != nil {
 		return err
 	}
@@ -592,7 +664,7 @@ func CreateVideoServer(c context.Context, namespace, image, cert, key string, cl
 			"server.key": key,
 		},
 	}
-	_, err = clientset.CoreV1().Secrets(namespace).Create(c, secret, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -617,7 +689,7 @@ func CreateVideoServer(c context.Context, namespace, image, cert, key string, cl
 						{
 							Name:            "video-server",
 							Image:           image,
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 							VolumeMounts: []v1.VolumeMount{{
 								Name:      "cert",
 								ReadOnly:  true,
@@ -641,7 +713,7 @@ func CreateVideoServer(c context.Context, namespace, image, cert, key string, cl
 		},
 	}
 
-	_, err = clientset.AppsV1().Deployments(namespace).Create(c, &videoServerDeployment, metav1.CreateOptions{})
+	_, err = c.Clientset.AppsV1().Deployments(namespace).Create(ctx, &videoServerDeployment, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating video-server deployment %w", err)
 	}
@@ -658,7 +730,7 @@ func CreateVideoServer(c context.Context, namespace, image, cert, key string, cl
 		},
 	}
 
-	_, err = clientset.CoreV1().Services(namespace).Create(c, &videoServerService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, &videoServerService, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating video-server service %w", err)
 	}
@@ -676,14 +748,14 @@ func CreateVideoServer(c context.Context, namespace, image, cert, key string, cl
 			Type:     v1.ServiceTypeLoadBalancer,
 		},
 	}
-	_, err = clientset.CoreV1().Services(namespace).Create(c, publicService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, publicService, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating video-server service %w", err)
 	}
 	return nil
 }
 
-func CreateVideoMultiplexer(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
+func (c *Client) CreateVideoMultiplexer(ctx context.Context, namespace string, image string) error {
 
 	videoServerDeployment := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -707,7 +779,7 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 							Name:            "video-multiplexer",
 							Image:           image,
 							Args:            []string{"-mqtt", "tcp://mqtt-server-svc:8883", "-rtsp", "video-server-svc:8554", "-test"},
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -718,7 +790,7 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 		},
 	}
 
-	_, err := clientset.AppsV1().Deployments(namespace).Create(c, &videoServerDeployment, metav1.CreateOptions{})
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, &videoServerDeployment, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Error creating video-multiplexer deployment %v", err)
 		return err
@@ -737,7 +809,7 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 		},
 	}
 
-	_, err = clientset.CoreV1().Services(namespace).Create(c, &videoServerService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, &videoServerService, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Error creating video-multiplexer service %v", err)
 		return err
@@ -746,7 +818,7 @@ func CreateVideoMultiplexer(c context.Context, namespace string, image string, c
 	return nil
 }
 
-func CreateWebBackend(c context.Context, namespace string, image string, clientset *kubernetes.Clientset) error {
+func (c *Client) CreateWebBackend(ctx context.Context, namespace string, image string) error {
 
 	videoServerDeployment := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -770,7 +842,7 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 							Name:            "web-backend",
 							Image:           image,
 							Args:            []string{"tcp://mqtt-server-svc:8883"},
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 						},
 					},
 					ImagePullSecrets: []v1.LocalObjectReference{{
@@ -781,7 +853,7 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 		},
 	}
 
-	_, err := clientset.AppsV1().Deployments(namespace).Create(c, &videoServerDeployment, metav1.CreateOptions{})
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, &videoServerDeployment, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Error creating web-backend deployment %v", err)
 		return err
@@ -800,7 +872,7 @@ func CreateWebBackend(c context.Context, namespace string, image string, clients
 		},
 	}
 
-	_, err = clientset.CoreV1().Services(namespace).Create(c, &videoServerService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, &videoServerService, metav1.CreateOptions{})
 	if err != nil {
 		log.Printf("Error creating web-backend service %v", err)
 		return err
@@ -828,7 +900,7 @@ type MissionDataRecorderBackendOptions struct {
 	Cloud         *MissionDataRecorderBackendCloudOptions
 }
 
-func CreateMissionDataRecorderBackend(ctx context.Context, clientset *kubernetes.Clientset, opts *MissionDataRecorderBackendOptions) error {
+func (c *Client) CreateMissionDataRecorderBackend(ctx context.Context, opts *MissionDataRecorderBackendOptions) error {
 	if (opts.DataDirectory == "" && opts.Cloud == nil) || (opts.DataDirectory != "" && opts.Cloud != nil) {
 		return errors.New("exactly one of opts.DataDirectory and opts.Cloud must be non-empty")
 	}
@@ -924,7 +996,7 @@ gcp:
 				"key.json": opts.Cloud.JSONKey,
 			},
 		}
-		_, err = clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+		_, err = c.Clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, secret, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
@@ -947,7 +1019,7 @@ gcp:
 						{
 							Name:            "mission-data-recorder-backend",
 							Image:           opts.Image,
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 							VolumeMounts:    volumeMounts,
 						},
 					},
@@ -973,15 +1045,15 @@ gcp:
 			}},
 		},
 	}
-	_, err := clientset.CoreV1().ConfigMaps(opts.Namespace).Create(ctx, config, metav1.CreateOptions{})
+	_, err := c.Clientset.CoreV1().ConfigMaps(opts.Namespace).Create(ctx, config, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
-	_, err = clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	_, err = c.Clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
-	_, err = clientset.CoreV1().Services(opts.Namespace).Create(ctx, service, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(opts.Namespace).Create(ctx, service, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -1004,7 +1076,7 @@ type CreateDroneOptions struct {
 	MissionDataRecording MissionDataRecordingOptions // required
 }
 
-func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *CreateDroneOptions) error {
+func (c *Client) CreateDrone(ctx context.Context, opts *CreateDroneOptions) error {
 	false := false
 	name := fmt.Sprintf("drone-%s", opts.DeviceID)
 	droneSecret := &v1.Secret{
@@ -1077,7 +1149,7 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 						{
 							Name:            name,
 							Image:           opts.Image,
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 							Env:             droneContainerEnvs,
 						},
 					},
@@ -1111,47 +1183,47 @@ func CreateDrone(ctx context.Context, clientset *kubernetes.Clientset, opts *Cre
 			},
 		},
 	}
-	_, err := clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, droneSecret, metav1.CreateOptions{})
+	_, err := c.Clientset.CoreV1().Secrets(opts.Namespace).Create(ctx, droneSecret, metav1.CreateOptions{})
 	if k8serrors.IsAlreadyExists(err) {
 		return ErrDroneExists
 	} else if err != nil {
 		return err
 	}
-	droneDeployment, err = clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
+	droneDeployment, err = c.Clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
 	if k8serrors.IsAlreadyExists(err) {
 		return ErrDroneExists
 	} else if err != nil {
 		return err
 	}
-	_, err = clientset.CoreV1().Services(opts.Namespace).Create(ctx, droneService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(opts.Namespace).Create(ctx, droneService, metav1.CreateOptions{})
 	if k8serrors.IsAlreadyExists(err) {
 		return ErrDroneExists
 	}
 	return err
 }
 
-func DeleteDrone(ctx context.Context, namespace, deviceID string, clientset *kubernetes.Clientset) error {
+func (c *Client) DeleteDrone(ctx context.Context, namespace, deviceID string) error {
 	name := "drone-" + deviceID
 	gracePeriod := int64(5)
 	opts := metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod}
 	var errs *multierror.Error
-	err := clientset.AppsV1().Deployments(namespace).Delete(ctx, name, opts)
+	err := c.Clientset.AppsV1().Deployments(namespace).Delete(ctx, name, opts)
 	if !k8serrors.IsNotFound(err) {
 		errs = multierror.Append(errs, err)
 	}
-	err = clientset.CoreV1().Services(namespace).Delete(ctx, name+"-svc", opts)
+	err = c.Clientset.CoreV1().Services(namespace).Delete(ctx, name+"-svc", opts)
 	if !k8serrors.IsNotFound(err) {
 		errs = multierror.Append(errs, err)
 	}
-	err = clientset.CoreV1().Secrets(namespace).Delete(ctx, name+"-secret", opts)
+	err = c.Clientset.CoreV1().Secrets(namespace).Delete(ctx, name+"-secret", opts)
 	if !k8serrors.IsNotFound(err) {
 		errs = multierror.Append(errs, err)
 	}
 	return errs.ErrorOrNil()
 }
 
-func GetDronePodName(c context.Context, namespace string, deviceID string, clientset *kubernetes.Clientset) (string, error) {
-	pods, err := clientset.CoreV1().Pods(namespace).List(c, metav1.ListOptions{LabelSelector: "drone-device-id=" + deviceID})
+func (c *Client) GetDronePodName(ctx context.Context, namespace string, deviceID string) (string, error) {
+	pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "drone-device-id=" + deviceID})
 	if err != nil {
 		return "", err
 	}
@@ -1161,20 +1233,43 @@ func GetDronePodName(c context.Context, namespace string, deviceID string, clien
 	return pods.Items[0].Name, nil
 }
 
-func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube *kubernetes.Clientset) error {
-	_, err := kube.AppsV1().Deployments(namespace).Get(c, "gzweb-dep", metav1.GetOptions{})
+func (c *Client) GetDroneLogs(ctx context.Context, simulationName, droneID string) ([]byte, error) {
+	pods, err := c.Clientset.CoreV1().Pods(simulationName).List(ctx, metav1.ListOptions{
+		LabelSelector: "drone-device-id=" + droneID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(pods.Items) != 1 {
+		return nil, ErrNoSuchDrone
+	}
+	return c.Clientset.CoreV1().Pods(simulationName).GetLogs(pods.Items[0].Name, &v1.PodLogOptions{
+		Follow: false,
+	}).DoRaw(ctx)
+}
+
+func (c *Client) GetDroneIdentityKey(ctx context.Context, simulationName, droneID string) ([]byte, error) {
+	secret, err := c.Clientset.CoreV1().Secrets(simulationName).Get(ctx, "drone-"+droneID+"-secret", metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return secret.Data["DRONE_IDENTITY_KEY"], nil
+}
+
+func (c *Client) CreateViewer(ctx context.Context, namespace, image, simCoordURL string) error {
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, "gzweb-dep", metav1.GetOptions{})
 	if err == nil {
 		// the deployment already exists
 		return nil
 	}
 
-	portRange, err := getPortRange(c, namespace, kube)
+	portRange, err := c.getPortRange(ctx, namespace)
 	if err != nil {
 		return err
 	}
 
 	// get gzserver deployment
-	gzserverDep, err := kube.AppsV1().Deployments(namespace).Get(c, "gzserver-dep", metav1.GetOptions{})
+	gzserverDep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, "gzserver-dep", metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("Unable to get gzserverwdep")
 	}
@@ -1210,7 +1305,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 						{
 							Name:            "gazebo-data",
 							Image:           dataImage,
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 							Command:         []string{"cp", "-r", "/gazebo-data/models", "/gazebo-data/worlds", "/gazebo-data/scripts", "gazebo-data/plugins", "/data"},
 							VolumeMounts: []v1.VolumeMount{
 								{
@@ -1225,7 +1320,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 							Name:            "gzweb",
 							Image:           image,
 							Args:            []string{"http://gzserver-svc:11345"},
-							ImagePullPolicy: DefaultPullPolicy,
+							ImagePullPolicy: c.PullPolicy,
 							VolumeMounts: []v1.VolumeMount{
 								{
 									MountPath: "/data",
@@ -1249,7 +1344,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 		},
 	}
 
-	gzwebDeployment, err = kube.AppsV1().Deployments(namespace).Create(c, gzwebDeployment, metav1.CreateOptions{})
+	gzwebDeployment, err = c.Clientset.AppsV1().Deployments(namespace).Create(ctx, gzwebDeployment, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating gzweb deployment %w", err)
 	}
@@ -1269,7 +1364,7 @@ func CreateViewer(c context.Context, namespace, image, simCoordURL string, kube 
 		},
 	}
 
-	_, err = kube.CoreV1().Services(namespace).Create(c, gzwebService, metav1.CreateOptions{})
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, gzwebService, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("Error creating gzweb service %w", err)
 	}
