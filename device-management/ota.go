@@ -53,7 +53,7 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	err := json.NewDecoder(r.Body).Decode(&request)
 	r.Body.Close()
 	if err != nil {
-		log.Printf("Could not unmarshal telemetry message: %v", err)
+		writeError(w, "Could not unmarshal request", err, http.StatusBadRequest)
 		return
 	}
 
@@ -89,7 +89,6 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 
 		newCfg, err := serializeConfig(cfg)
 		if err != nil {
-			log.Printf("Could not serialize configuration: %v", err)
 			writeError(w, "Could not serialize configuration", err, http.StatusInternalServerError)
 			return
 		}
@@ -102,7 +101,6 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		updateCall := client.Projects.Locations.Registries.Devices.ModifyCloudToDeviceConfig(deviceName, &modifyRequest)
 		_, err = updateCall.Do()
 		if err != nil {
-			log.Printf("Could not update configuration: %v", err)
 			writeError(w, "Could not update configuration", err, http.StatusInternalServerError)
 			return
 		}

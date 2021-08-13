@@ -10,8 +10,16 @@ import (
 )
 
 func registerRoutes(router *httprouter.Router) {
-	router.HandlerFunc(http.MethodPost, "/profile-update", profileUpdateHandler)
 	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
+
+	// OTA
+	router.HandlerFunc(http.MethodPost, "/profile-update", profileUpdateHandler)
+
+	// Provisioning
+	router.HandlerFunc(http.MethodGet, "/device-settings/:deviceID", getDeviceSettings)
+	router.HandlerFunc(http.MethodPost, "/devices", createDevice)
+	router.HandlerFunc(http.MethodGet, "/devices", listDevices)
+	router.HandlerFunc(http.MethodGet, "/devices/:deviceID", getDevice)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
