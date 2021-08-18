@@ -63,7 +63,7 @@ func profileUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parent := fmt.Sprintf("projects/%s/locations/%s/registries/%s", "auto-fleet-mgnt", "europe-west1", "fleet-registry")
+	parent := fmt.Sprintf("projects/%s/locations/%s/registries/%s", projectID(), "europe-west1", "fleet-registry")
 	call := client.Projects.Locations.Registries.Devices.List(parent)
 	call.DeviceIds(request.DeviceIDs...)
 	call.FieldMask("config")

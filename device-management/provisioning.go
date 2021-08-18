@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/julienschmidt/httprouter"
 	"google.golang.org/api/cloudiot/v1"
@@ -145,5 +146,13 @@ func registryPath() string {
 }
 
 func projectID() string {
-	return "auto-fleet-mgnt"
+	return getEnvOrDefault("PROJECT_ID", "auto-fleet-mgnt")
+}
+
+func getEnvOrDefault(env, defaultValue string) string {
+	value := os.Getenv(env)
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }
