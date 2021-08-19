@@ -755,33 +755,33 @@ func (c *Client) CreateVideoServer(ctx context.Context, namespace, image, cert, 
 	return nil
 }
 
-func (c *Client) CreateVideoMultiplexer(ctx context.Context, namespace string, image string) error {
-
-	videoServerDeployment := appsv1.Deployment{
+func (c *Client) CreateVideoStreamer(ctx context.Context, namespace, image, baseURL string) error {
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "video-multiplexer-dep",
+			Name: "video-streamer-dep",
 		},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"app": "video-multiplexer-pod",
+					"app": "video-streamer-pod",
 				},
 			},
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app": "video-multiplexer-pod",
+						"app": "video-streamer-pod",
 					},
 				},
 				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name:            "video-multiplexer",
-							Image:           image,
-							Args:            []string{"-mqtt", "tcp://mqtt-server-svc:8883", "-rtsp", "video-server-svc:8554", "-test"},
-							ImagePullPolicy: c.PullPolicy,
+					Containers: []v1.Container{{
+						Name:            "video-streamer",
+						Image:           image,
+						ImagePullPolicy: c.PullPolicy,
+						Args: []string{
+							"video-server-svc:8554",
+							baseURL,
 						},
-					},
+					}},
 					ImagePullSecrets: []v1.LocalObjectReference{{
 						Name: "dockerconfigjson",
 					}},
@@ -789,33 +789,27 @@ func (c *Client) CreateVideoMultiplexer(ctx context.Context, namespace string, i
 			},
 		},
 	}
-
-	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, &videoServerDeployment, metav1.CreateOptions{})
-	if err != nil {
-		log.Printf("Error creating video-multiplexer deployment %v", err)
-		return err
-	}
-
-	videoServerService := v1.Service{
+	service := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "video-multiplexer-svc",
+			Name: "video-streamer-svc",
 		},
 		Spec: v1.ServiceSpec{
+			Selector: map[string]string{
+				"app": "video-streamer-pod",
+			},
 			Ports: []v1.ServicePort{{
-				Port: 8084,
+				Name:       "api",
+				Port:       80,
+				TargetPort: intstr.FromInt(8084),
 			}},
-			Selector: map[string]string{"app": "video-multiplexer-pod"},
-			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
-
-	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, &videoServerService, metav1.CreateOptions{})
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil {
-		log.Printf("Error creating video-multiplexer service %v", err)
 		return err
 	}
-
-	return nil
+	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{})
+	return err
 }
 
 func (c *Client) CreateWebBackend(ctx context.Context, namespace string, image string) error {

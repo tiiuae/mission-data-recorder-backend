@@ -27,7 +27,7 @@ var (
 	imageMQTTServer                 = "ghcr.io/tiiuae/tii-mqtt-server:latest"
 	imageMissionControl             = "ghcr.io/tiiuae/tii-mission-control:latest"
 	imageVideoServer                = "ghcr.io/tiiuae/tii-video-server:latest"
-	imageVideoMultiplexer           = "ghcr.io/tiiuae/tii-video-multiplexer:latest"
+	imageVideoStreamer              = "ghcr.io/tiiuae/tii-video-streamer:latest"
 	imageWebBackend                 = "ghcr.io/tiiuae/tii-web-backend:latest"
 	imageMissionDataRecorderBackend = "ghcr.io/tiiuae/tii-mission-data-recorder-backend:latest"
 
@@ -98,7 +98,7 @@ func init() {
 	flag.StringVar(&imageMQTTServer, "image-mqtt-server", imageMQTTServer, "Docker image for MQTT server")
 	flag.StringVar(&imageMissionControl, "image-mission-control", imageMissionControl, "Docker image for mission control")
 	flag.StringVar(&imageVideoServer, "image-video-server", imageVideoServer, "Docker image for video server")
-	flag.StringVar(&imageVideoMultiplexer, "image-video-multiplexer", imageVideoMultiplexer, "Docker image for video multiplexer")
+	flag.StringVar(&imageVideoStreamer, "image-video-streamer", imageVideoStreamer, "Docker image for video streamer")
 	flag.StringVar(&imageWebBackend, "image-web-backend", imageWebBackend, "Docker image for web backend")
 	flag.StringVar(&imageMissionDataRecorderBackend, "image-mission-data-recorder-backend", imageMissionDataRecorderBackend, "Docker image for mission data recorder backend")
 

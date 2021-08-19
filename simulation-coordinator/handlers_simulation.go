@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"math/rand"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -190,9 +191,9 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 			creationError = fmt.Errorf("error creating video-server deployment: %w", err)
 			return
 		}
-		err = client.CreateVideoMultiplexer(c, request.Name, imageVideoMultiplexer)
+		err = client.CreateVideoStreamer(c, request.Name, imageVideoStreamer, "/simulations/"+request.Name+"/video/")
 		if err != nil {
-			creationError = fmt.Errorf("error creating video-multiplexer deployment: %w", err)
+			creationError = fmt.Errorf("error creating video-streamer deployment: %w", err)
 			return
 		}
 		err = client.CreateWebBackend(c, request.Name, imageWebBackend)
@@ -849,6 +850,16 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 		videoServer.Host = videoServer.Hostname() + ":8554"
 	}
 	writeJSON(w, obj{"video_url": videoServer.String()})
+}
+
+func droneVideoStreamWebUIHandler(w http.ResponseWriter, r *http.Request) {
+	params := httprouter.ParamsFromContext(r.Context())
+	simulationName := params.ByName("simulationName")
+	prefix := "/simulations/" + simulationName + "/video"
+	http.StripPrefix(prefix, httputil.NewSingleHostReverseProxy(&url.URL{
+		Scheme: "http",
+		Host:   "video-streamer-svc." + simulationName,
+	})).ServeHTTP(w, r)
 }
 
 func droneShellHandler(w http.ResponseWriter, r *http.Request) {

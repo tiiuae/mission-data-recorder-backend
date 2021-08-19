@@ -23,6 +23,7 @@ func registerRoutes(router *httprouter.Router, enableAuth bool) {
 	router.Handler(http.MethodGet, "/simulations/:simulationName", auth(http.HandlerFunc(getSimulationHandler)))
 	router.Handler(http.MethodDelete, "/simulations/:simulationName", auth(http.HandlerFunc(removeSimulationHandler)))
 	router.Handler(http.MethodGet, "/simulations/:simulationName/viewer", auth(refreshSimulationExpiry(startViewerHandler)))
+	router.HandlerFunc(http.MethodGet, "/simulations/:simulationName/video/*path", droneVideoStreamWebUIHandler)
 	router.Handler(http.MethodGet, "/simulations/:simulationName/drones", auth(refreshSimulationExpiry(getDronesHandler)))
 	router.Handler(http.MethodPost, "/simulations/:simulationName/drones", auth(refreshSimulationExpiry(addDroneHandler)))
 	router.Handler(http.MethodPost, "/simulations/:simulationName/drones/:droneID/command", auth(refreshSimulationExpiry(commandDroneHandler)))
