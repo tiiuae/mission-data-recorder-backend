@@ -20,6 +20,7 @@ type ConfigST struct {
 //ServerST struct
 type ServerST struct {
 	HTTPPort string `json:"http_port"`
+	BaseURL  string `json:"-"`
 }
 
 //StreamST struct
@@ -92,7 +93,7 @@ func (element *ConfigST) HasViewer(uuid string) bool {
 	return false
 }
 
-func loadConfig(videoServerAddress string) *ConfigST {
+func loadConfig(videoServerAddress, baseURL string) *ConfigST {
 	// var tmp ConfigST
 	// data, err := ioutil.ReadFile("config.json")
 	// if err != nil {
@@ -109,6 +110,7 @@ func loadConfig(videoServerAddress string) *ConfigST {
 	return &ConfigST{
 		Server: ServerST{
 			HTTPPort: ":8084",
+			BaseURL:  baseURL,
 		},
 		Streams:            make(map[string]StreamST),
 		VideoServerAddress: videoServerAddress,

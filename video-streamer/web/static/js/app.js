@@ -50,16 +50,10 @@ function loadPacket() {
   }
 }
 
-var potocol = 'ws';
-if (location.protocol.indexOf('s') >= 0) {
-  potocol = 'wss';
-}
-
 function opened() {
   var inputVal = $('#suuid').val();
-  var port = $('#port').val();
-  const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/live?suuid=${inputVal}`;
-  ws = new WebSocket(wsUrl);
+  const base = document.baseURI.replace(/^http/, "ws").replace(/\/$/, "");
+  ws = new WebSocket(`${base}/ws/live?suuid=${inputVal}`);
   ws.binaryType = "arraybuffer";
   ws.onopen = function(event) {
     console.log('Connect');

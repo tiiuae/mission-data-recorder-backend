@@ -18,14 +18,16 @@ func serveHTTP() {
 	router.LoadHTMLGlob("web/templates/*")
 	router.GET("/test", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.tmpl", gin.H{
-			"port":  Config.Server.HTTPPort,
-			"suuid": "test-stream-1",
+			"port":    Config.Server.HTTPPort,
+			"suuid":   "test-stream-1",
+			"baseURL": Config.Server.BaseURL,
 		})
 	})
 	router.GET("/test/:suuid", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "index.tmpl", gin.H{
-			"port":  Config.Server.HTTPPort,
-			"suuid": c.Param("suuid"),
+			"port":    Config.Server.HTTPPort,
+			"suuid":   c.Param("suuid"),
+			"baseURL": Config.Server.BaseURL,
 		})
 	})
 	router.GET("/ws/:suuid", func(c *gin.Context) {

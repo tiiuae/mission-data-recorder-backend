@@ -11,14 +11,18 @@ import (
 var Config *ConfigST
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("usage: video-streamer <video-server>")
+	if len(os.Args) < 2 || len(os.Args) > 3 {
+		fmt.Println("usage: video-streamer <video-server> [base-url]")
 		return
 	}
 
 	videoServerAddress := os.Args[1]
+	baseURL := "/"
+	if len(os.Args) > 2 {
+		baseURL = os.Args[2]
+	}
 
-	Config = loadConfig(videoServerAddress)
+	Config = loadConfig(videoServerAddress, baseURL)
 
 	go serveHTTP()
 	sigs := make(chan os.Signal, 1)
