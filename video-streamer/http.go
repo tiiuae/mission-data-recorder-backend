@@ -23,13 +23,8 @@ func serveHTTP() {
 			"baseURL": Config.Server.BaseURL,
 		})
 	})
-	router.GET("/test/:suuid", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "index.tmpl", gin.H{
-			"port":    Config.Server.HTTPPort,
-			"suuid":   c.Param("suuid"),
-			"baseURL": Config.Server.BaseURL,
-		})
-	})
+	router.GET("/drones/:suuid", droneStreamHandler)
+	router.GET("/test/:suuid", droneStreamHandler)
 	router.GET("/ws/:suuid", func(c *gin.Context) {
 		handler := websocket.Handler(ws)
 		handler.ServeHTTP(c.Writer, c.Request)
@@ -43,6 +38,15 @@ func serveHTTP() {
 		log.Fatalln(err)
 	}
 }
+
+func droneStreamHandler(c *gin.Context) {
+	c.HTML(http.StatusOK, "index.tmpl", gin.H{
+		"port":    Config.Server.HTTPPort,
+		"suuid":   c.Param("suuid"),
+		"baseURL": Config.Server.BaseURL,
+	})
+}
+
 func ws(ws *websocket.Conn) {
 	defer ws.Close()
 	suuid := ws.Request().FormValue("suuid")
