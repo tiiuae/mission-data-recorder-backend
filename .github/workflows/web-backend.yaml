@@ -2,7 +2,7 @@ name: web-backend
 
 on:
   push:
-    branches: wb-origin-fix
+    branches: main
     paths:
       - web-backend/**
 
@@ -27,4 +27,4 @@ jobs:
           context: ./web-backend/
           file: ./web-backend/Dockerfile
           push: true
-          tags: ghcr.io/tiiuae/tii-web-backend:origin-fix
+          tags: ghcr.io/tiiuae/tii-web-backend:latest
