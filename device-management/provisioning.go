@@ -89,6 +89,33 @@ func getDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, deviceInfo{device.Id})
 }
 
+func deleteDevice(w http.ResponseWriter, r *http.Request) {
+	c := r.Context()
+	params := httprouter.ParamsFromContext(c)
+	deviceID := params.ByName("deviceID")
+
+	client, err := cloudiot.NewService(r.Context())
+	if err != nil {
+		writeError(w, "Failed create IOT client", err, http.StatusInternalServerError)
+		return
+	}
+
+	call := client.Projects.Locations.Registries.Devices.Delete(fmt.Sprintf("%s/devices/%s", registryPath(), deviceID))
+	_, err = call.Do()
+	if err != nil {
+		if e, ok := err.(*googleapi.Error); ok {
+			if e.Code == 404 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		}
+		writeError(w, "Failed to delete device", err, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func createDevice(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		DeviceID    string `json:"device_id"`
@@ -116,9 +143,15 @@ func createIoTDevice(ctx context.Context, deviceID string, certificate []byte) e
 		return err
 	}
 
+	cfg := defaultConfiguration()
+	cfgStr, err := serializeConfig(cfg)
+	if err != nil {
+		return err
+	}
+
 	newDevice := &cloudiot.Device{
 		Blocked: false,
-		Config:  nil,
+		Config:  &cloudiot.DeviceConfig{BinaryData: cfgStr},
 		Credentials: []*cloudiot.DeviceCredential{
 			{
 				ExpirationTime: "",
