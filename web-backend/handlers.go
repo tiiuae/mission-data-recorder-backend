@@ -219,7 +219,7 @@ func subscribeGpsTrail(w http.ResponseWriter, r *http.Request) {
 	deviceIDs := r.URL.Query()["id"]
 	// accept websocket
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"localhost:8080", "sacplatform.com"},
+		OriginPatterns: []string{"localhost:8080", "*.sacplatform.com", "sacplatform.com"},
 	})
 	if err != nil {
 		log.Printf("Unable to accept websocket: %v", err)
