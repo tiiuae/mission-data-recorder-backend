@@ -13,10 +13,29 @@ import (
 )
 
 type deviceSettings struct {
-	DeviceID     string `json:"device_id"`
+	DeviceID         string           `json:"device_id"`
+	CommlinkSettings commlinkSettings `json:"communication_link"`
+	RecorderSettings recorderSettings `json:"mission_data_recorder"`
+	RtspSettings     rtspSettings     `json:"rtsp"`
+}
+
+type commlinkSettings struct {
 	MqttServer   string `json:"mqtt_server"`
 	MqttClientID string `json:"mqtt_client_id"`
 	MqttAudience string `json:"mqtt_audience"`
+}
+
+type recorderSettings struct {
+	Audience      string `json:"audience"`
+	BackendURL    string `json:"backend_url"`
+	Topics        string `json:"topics"`
+	DestDir       string `json:"dest_dir"`
+	SizeThreshold int    `json:"size_threshold"`
+	ExtraArgs     string `json:"extra_args"`
+}
+
+type rtspSettings struct {
+	RtspServer string `json:"rtsp_server"`
 }
 
 type deviceInfo struct {
@@ -29,10 +48,23 @@ func getDeviceSettings(w http.ResponseWriter, r *http.Request) {
 	deviceID := params.ByName("deviceID")
 
 	res := deviceSettings{
-		DeviceID:     deviceID,
-		MqttServer:   "ssl://mqtt.googleapis.com:8883",
-		MqttClientID: fmt.Sprintf("%s/devices/%s", registryPath(), deviceID),
-		MqttAudience: projectID(),
+		DeviceID: deviceID,
+		CommlinkSettings: commlinkSettings{
+			MqttServer:   "ssl://mqtt.googleapis.com:8883",
+			MqttClientID: fmt.Sprintf("%s/devices/%s", registryPath(), deviceID),
+			MqttAudience: projectID(),
+		},
+		RecorderSettings: recorderSettings{
+			Audience:      projectID(),
+			BackendURL:    recorderBackendUrl(),
+			Topics:        "",
+			DestDir:       ".",
+			SizeThreshold: 10000000,
+			ExtraArgs:     "",
+		},
+		RtspSettings: rtspSettings{
+			RtspServer: rtspBackendUrl(),
+		},
 	}
 
 	writeJSON(w, res)
@@ -188,4 +220,23 @@ func getEnvOrDefault(env, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func recorderBackendUrl() string {
+	return fmt.Sprintf("mission-data-upload.webapi.%s", subdomain())
+}
+
+func rtspBackendUrl() string {
+	return fmt.Sprintf("rtsps://DroneUser:22f6c4de-6144-4f6c-82ea-8afcdf19f316@video-stream.%s:8555", subdomain())
+}
+
+func subdomain() string {
+	switch projectID() {
+	case "tii-sac-platform-staging":
+		return "staging.sacplatform.com"
+	case "tii-sac-platform-demo":
+		return "demo.sacplatform.com"
+	default:
+		return "sacplatform.com"
+	}
 }

@@ -173,7 +173,7 @@ func defaultProfile() *ProfileConfig {
 func defaultInitialWifi() *InitialWifiConfig {
 	return &InitialWifiConfig{
 		ApiVersion: 1,
-		SSID:       "gold",
+		SSID:       "copper",
 		Key:        "1234567890",
 		Enc:        "wep",
 		APMAC:      "00:11:22:33:44:55",
