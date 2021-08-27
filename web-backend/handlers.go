@@ -378,7 +378,10 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 	})
 
 	go publishMessage(msg)
-	gt.Post(&gpstrail.Position{Device: deviceID, Timestamp: time.Now(), Lat: telemetry.Lat, Lon: telemetry.Lon})
+
+	if telemetry.LocationUpdated {
+		gt.Post(&gpstrail.Position{Device: deviceID, Timestamp: time.Now(), Lat: telemetry.Lat, Lon: telemetry.Lon})
+	}
 }
 
 func handleDebugValues(c context.Context, deviceID string, payload []byte) {
