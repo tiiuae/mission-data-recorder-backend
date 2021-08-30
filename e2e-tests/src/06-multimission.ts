@@ -12,8 +12,9 @@ test("single drone should complete two missions with single task each", async (t
 
 async function testMission(t: test.Test, missionSlug: string): Promise<void> {
     const ctx = await TestContext.create();
+    t.pass("simulation created");
 
-    const d1 = await ctx.createDrone("d1");
+    const d1 = await ctx.createDrone();
     t.pass("drone #1 created");
     const posBegin = await d1.position();
     t.pass("drone #1 is online");
@@ -52,7 +53,7 @@ async function testMission(t: test.Test, missionSlug: string): Promise<void> {
     await ctx.removeMission(mission);
     t.pass("mission removed");
 
-    ctx.close();
+    await ctx.close();
 }
 
 function randomBetween(min: number, max: number) {

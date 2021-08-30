@@ -35,8 +35,8 @@ function runPX4node(deviceName: string, fast: boolean): () => void {
     };
 
     let instanceCount = 1;
-    let lat = 0.0;
-    let lon = 0.0;
+    let lat = 1.0;
+    let lon = 1.0;
     let alt = 0.0;
     var armingState = 1;
     var navState = 4;

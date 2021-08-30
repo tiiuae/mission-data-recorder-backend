@@ -1,14 +1,14 @@
 import { TestContext } from "./ctx";
 import * as test from "tape";
 
-test("two drones should complete one task each", async (t) => {
+test("two drones should avoid collision when playing chicken", async (t) => {
     const ctx = await TestContext.create();
     t.pass("simulation created");
 
     // Create drones
-    const d1 = await ctx.createDroneAt(0,0);
+    const d1 = await ctx.createDroneAt(-5,0);
     t.pass("drone #1 created");
-    const d2 = await ctx.createDroneAt(1,0);
+    const d2 = await ctx.createDroneAt(5,0);
     t.pass("drone #2 created");
     
     // Wait for drones to come online
@@ -16,11 +16,6 @@ test("two drones should complete one task each", async (t) => {
     t.pass("drone #1 is online");
     const pos2 = await d2.position();
     t.pass("drone #2 is online");
-
-    // Create target coordinates
-    const center = pos1.between(pos2);
-    const target1 = center.move(10, 0);
-    const target2 = center.move(10, 180);
 
     // Create mission, assign drones
     const mission = await ctx.createMission("m1");
@@ -41,10 +36,10 @@ test("two drones should complete one task each", async (t) => {
     t.pass("drone #2 joined mission");
 
     // Create tasks
-    const t1 = await mission.addFlyToTask(target1);
+    const t1 = await mission.addFlyToTask(pos2);
     const t1completed = t1.completed();
     t.pass("task #1 added");
-    const t2 = await mission.addFlyToTask(target2);
+    const t2 = await mission.addFlyToTask(pos1);
     const t2completed = t2.completed();
     t.pass("task #2 added");
    

@@ -6,6 +6,10 @@ import * as gps from "./gps";
 const webBackendBaseUrl = process.env.SACP_BACKEND_BASE_URL != undefined ? process.env.SACP_BACKEND_BASE_URL : "http://127.0.0.1:8083";
 const missionControlBaseUrl = process.env.SACP_MISSION_CONTROL_BASE_URL != undefined ? process.env.SACP_MISSION_CONTROL_BASE_URL : "http://127.0.0.1:8082";
 
+function kubifyUrl(url: string, simulationName: string): string {
+    return url.replace("mission-control-svc", `mission-control-svc.${simulationName}`).replace("web-backend-svc", `web-backend-svc.${simulationName}`);
+}
+
 // ================================================================================
 // WebSocket API
 // ================================================================================
@@ -107,9 +111,9 @@ async function subscribeWebSocket(url: string): Promise<Observable<any>> {
     });
 }
 
-export async function subscribeAll(): Promise<Observable<Message>> {
-    const o1 = await subscribeWebSocket(webBackendBaseUrl + "/subscribe");
-    const o2 = await subscribeWebSocket(missionControlBaseUrl + "/subscribe");
+export async function subscribeAll(simulationName: string): Promise<Observable<Message>> {
+    const o1 = await subscribeWebSocket(kubifyUrl(webBackendBaseUrl, simulationName) + "/subscribe");
+    const o2 = await subscribeWebSocket(kubifyUrl(missionControlBaseUrl, simulationName) + "/subscribe");
 
     return merge(o1, o2);
 }
@@ -118,8 +122,45 @@ export async function subscribeAll(): Promise<Observable<Message>> {
 // HTTP API
 // ================================================================================
 
-export async function createMission(missionSlug: string) {
-    return fetch(`${missionControlBaseUrl}/missions`, {
+export async function waitForStartup(simulationName: string): Promise<boolean> {
+    const h1 = checkHealthz(kubifyUrl(webBackendBaseUrl, simulationName) + "/healthz");
+    const h2 = checkHealthz(kubifyUrl(missionControlBaseUrl, simulationName) + "/healthz");
+
+    const r1 = await h1;
+    const r2 = await h2;
+
+    return r1 && r2;
+}
+
+async function sleep(interval: number): Promise<void> {
+    return new Promise(resolve => setTimeout(() => resolve(), interval));
+}
+
+async function checkHealthz(url: string): Promise<boolean> {
+    for (var i = 0; i < 20; i++) {
+        try {
+            const res = await getHealthz(url);
+            if (res.status == 200) {
+                return true;
+            }
+        }
+        catch (e) {
+        }
+
+        await sleep(1000);
+    }
+
+    return false;
+}
+
+async function getHealthz(url: string) {
+    return fetch(url, {
+        method: "GET",
+    });
+}
+
+export async function createMission(simulationName: string, missionSlug: string) {
+    return fetch(`${kubifyUrl(missionControlBaseUrl, simulationName)}/missions`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -131,8 +172,8 @@ export async function createMission(missionSlug: string) {
     });
 }
 
-export async function assignDrone(missionSlug: string, droneId: string) {
-    return fetch(`${missionControlBaseUrl}/missions/${missionSlug}/drones`, {
+export async function assignDrone(simulationName: string, missionSlug: string, droneId: string) {
+    return fetch(`${kubifyUrl(missionControlBaseUrl, simulationName)}/missions/${missionSlug}/drones`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -143,17 +184,17 @@ export async function assignDrone(missionSlug: string, droneId: string) {
     });
 }
 
-export async function removeDrone(missionSlug: string, droneId: string) {
+export async function removeDrone(simulationName: string, missionSlug: string, droneId: string) {
     return fetch(
-        `${missionControlBaseUrl}/missions/${missionSlug}/drones/${droneId}`,
+        `${kubifyUrl(missionControlBaseUrl, simulationName)}/missions/${missionSlug}/drones/${droneId}`,
         {
             method: "DELETE",
         }
     );
 }
 
-export async function addFlyToTask(missionSlug: string, taskId: string, target: gps.Point) {
-    return fetch(`${missionControlBaseUrl}/missions/${missionSlug}/backlog`, {
+export async function addFlyToTask(simulationName: string, missionSlug: string, taskId: string, target: gps.Point) {
+    return fetch(`${kubifyUrl(missionControlBaseUrl, simulationName)}/missions/${missionSlug}/backlog`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -165,18 +206,19 @@ export async function addFlyToTask(missionSlug: string, taskId: string, target: 
             payload: {
                 lat: target.lat,
                 lon: target.lon,
-                alt: 10.0,
+                alt: 1.0,
             },
         }),
     });
 }
 
 export async function addPredefinedTask(
+    simulationName: string,
     missionSlug: string,
     taskId: string,
     droneId: string
 ) {
-    return fetch(`${missionControlBaseUrl}/missions/${missionSlug}/backlog`, {
+    return fetch(`${kubifyUrl(missionControlBaseUrl, simulationName)}/missions/${missionSlug}/backlog`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -192,8 +234,8 @@ export async function addPredefinedTask(
     });
 }
 
-export async function deleteMission(missionSlug: string) {
-    return fetch(`${missionControlBaseUrl}/missions/${missionSlug}`, {
+export async function deleteMission(simulationName: string, missionSlug: string) {
+    return fetch(`${kubifyUrl(missionControlBaseUrl, simulationName)}/missions/${missionSlug}`, {
         method: "DELETE",
         headers: {
             "Content-Type": "application/json",

@@ -37,8 +37,8 @@ function runF4Fnode(deviceName: string, fast: boolean): () => void {
 
     const interval = fast ? 100 : 5000;
 
-    var lat = 0.0;
-    var lon = 0.0;
+    var lat = 1.0;
+    var lon = 1.0;
     var alt = 0.0;
     var armingState = 1;
     var navState = 4;

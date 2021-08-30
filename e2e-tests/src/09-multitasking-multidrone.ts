@@ -3,10 +3,11 @@ import * as test from "tape";
 
 test("two drones should complete multiple tasks assigned in parallel", async (t) => {
     const ctx = await TestContext.create();
+    t.pass("simulation created");
 
-    const d1 = await ctx.createDrone("d1");
+    const d1 = await ctx.createDroneAt(0,0);
     t.pass("drone #1 created");
-    const d2 = await ctx.createDrone("d2");
+    const d2 = await ctx.createDroneAt(1,0);
     t.pass("drone #2 created");
     const posBegin = await d1.position();
     t.pass("drone #1 is online");
@@ -14,7 +15,7 @@ test("two drones should complete multiple tasks assigned in parallel", async (t)
     t.pass("drone #2 is online");
 
     // Fly rectangular path (d x d meters), return to starting position
-    const d = 25;
+    const d = 10;
     const target4 = posBegin;
     const target1 = target4.move(d, 0);
     const target2 = target1.move(d, 90);
@@ -82,5 +83,5 @@ test("two drones should complete multiple tasks assigned in parallel", async (t)
     await ctx.removeMission(mission);
     t.pass("mission removed");
 
-    ctx.close();
+    await ctx.close();
 });

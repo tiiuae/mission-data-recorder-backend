@@ -3,8 +3,9 @@ import * as test from "tape";
 
 test("task should fail if drone unable to execute", async (t) => {
     const ctx = await TestContext.create();
+    t.pass("simulation created");
 
-    const d1 = await ctx.createDrone("d1");
+    const d1 = await ctx.createDrone();
     t.pass("drone #1 created");
     
     const pos = await d1.position();
@@ -34,5 +35,5 @@ test("task should fail if drone unable to execute", async (t) => {
     await ctx.removeMission(mission);
     t.pass("mission removed");
 
-    ctx.close();
+    await ctx.close();
 });

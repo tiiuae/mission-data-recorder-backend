@@ -3,11 +3,12 @@ import * as test from "tape";
 
 test("two drones should complete four tasks with a pause in between", async (t) => {
     const ctx = await TestContext.create();
+    t.pass("simulation created");
 
     // Create drones
-    const d1 = await ctx.createDrone("d1");
+    const d1 = await ctx.createDroneAt(0,0);
     t.pass("drone #1 created");
-    const d2 = await ctx.createDrone("d2");
+    const d2 = await ctx.createDroneAt(1,0);
     t.pass("drone #2 created");
     
     // Wait for drones to come online
@@ -81,6 +82,6 @@ test("two drones should complete four tasks with a pause in between", async (t) 
     await ctx.removeMission(mission);
     t.pass("mission removed");
 
-    ctx.close();
+    await ctx.close();
 
 });

@@ -48,7 +48,7 @@ tmux send-keys "go run . -device_id d1 -mqtt_broker 127.0.0.1:8883 -private_key 
 
 tmux select-pane -t 4
 tmux send-keys "cd ../../communication_link/missionengine/cmd" C-m
-tmux send-keys "go run . -device_id d1 -mqtt_broker 127.0.0.1:8883" C-m
+tmux send-keys "go run . -device_id d1" C-m
 
 tmux select-pane -t 5
 tmux send-keys "cd ../../communication_link/communicationlink" C-m
@@ -56,7 +56,7 @@ tmux send-keys "go run . -device_id d2 -mqtt_broker 127.0.0.1:8883 -private_key 
 
 tmux select-pane -t 6
 tmux send-keys "cd ../../communication_link/missionengine/cmd" C-m
-tmux send-keys "go run . -device_id d2 -mqtt_broker 127.0.0.1:8883" C-m
+tmux send-keys "go run . -device_id d2" C-m
 
 tmux select-pane -t 2
 tmux send-keys "alias q='tmux kill-session'" C-m

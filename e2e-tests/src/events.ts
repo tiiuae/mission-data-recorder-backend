@@ -26,7 +26,7 @@ export function currentTelemetry(
 ): Promise<TelemetryEvent> {
     return events
         .pipe(
-            filter((x) => x.event == "telemetry" && x.device == droneId),
+            filter((x) => x.event == "telemetry" && x.device == droneId && x.payload.lat != 0 && x.payload.lon != 0),
             map(x => x.event == "telemetry" ? x.payload : null),
             take(1),
             timeout(timeoutMs)

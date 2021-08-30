@@ -3,11 +3,12 @@ import * as test from "tape";
 
 test("single drone should complete task", async (t) => {
     const ctx = await TestContext.create();
+    t.pass("simulation created");
 
     // Create drone
-    const d1 = await ctx.createDrone("d1");
+    const d1 = await ctx.createDrone();
     t.pass("drone #1 created");
-    
+
     await d1.telemetry();
     t.pass("drone #1 telemetry received");
 
@@ -48,5 +49,5 @@ test("single drone should complete task", async (t) => {
     await ctx.removeMission(mission);
     t.pass("mission removed");
 
-    ctx.close();
+    await ctx.close();
 });
