@@ -5,6 +5,8 @@ on:
     branches: main
     paths:
       - video-streamer/**
+    tags: 
+      - v*
 
 jobs:
   tii-video-streamer:

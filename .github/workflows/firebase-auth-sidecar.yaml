@@ -5,6 +5,8 @@ on:
     branches: main
     paths:
       - firebase-auth-sidecar/**
+    tags: 
+      - v*
   workflow_dispatch:
 
 jobs:
