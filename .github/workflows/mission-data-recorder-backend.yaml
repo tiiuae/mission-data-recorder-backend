@@ -7,6 +7,7 @@ on:
       - mission-data-recorder-backend/**
     tags: 
       - v*
+      - rc*
   workflow_dispatch:
 
 jobs:
