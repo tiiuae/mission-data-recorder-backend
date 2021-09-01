@@ -4,6 +4,9 @@ import fetch from "node-fetch";
 const coordinatorBaseUrl = process.env.SACP_COORDINATOR_BASE_URL != undefined ? process.env.SACP_COORDINATOR_BASE_URL : "http://127.0.0.1:80";
 
 export async function createSimulation(simulationSlug: string): Promise<any> {
+    if (coordinatorBaseUrl.includes("http://127.0.0.1:80"))
+        return Promise.resolve(null);
+
     return fetch(`${coordinatorBaseUrl}/simulations`, {
         method: "POST",
         headers: {
@@ -20,12 +23,18 @@ export async function createSimulation(simulationSlug: string): Promise<any> {
 }
 
 export async function removeSimulation(simulationSlug: string): Promise<any> {
+    if (coordinatorBaseUrl.includes("http://127.0.0.1:80"))
+        return Promise.resolve(null);
+
     return fetch(`${coordinatorBaseUrl}/simulations/${simulationSlug}`, {
         method: "DELETE",
     });
 }
 
 export async function addDrone(simulationSlug: string, deviceName: string, x: number, y: number): Promise<any> {
+    if (coordinatorBaseUrl.includes("http://127.0.0.1:80"))
+        return Promise.resolve(null);
+
     return fetch(`${coordinatorBaseUrl}/simulations/${simulationSlug}/drones`, {
         method: "POST",
         headers: {
