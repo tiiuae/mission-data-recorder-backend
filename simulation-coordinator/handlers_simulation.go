@@ -20,6 +20,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -395,6 +396,13 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Could not unmarshal simulation request", err, http.StatusInternalServerError)
 		return
 	}
+
+	ch, _ := regexp.Compile("^[a-zA-Z][a-zA-Z0-9]{2,254}")
+	if !ch.MatchString(request.DroneID) {
+		writeError(w, "Drone name not accepted; must conform to '^[a-zA-Z][a-zA-Z0-9]{2,254}'", errors.New("illformed DroneID"), http.StatusBadRequest)
+		return
+	}
+
 	creationSucceeded := false
 	defer func() {
 		if !creationSucceeded {
