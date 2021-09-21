@@ -1068,6 +1068,10 @@ type CreateDroneOptions struct {
 	MQTTBrokerAddress    string                      // required
 	RTSPServerAddress    string                      // required
 	MissionDataRecording MissionDataRecordingOptions // required
+	//
+	CommlinkYaml string
+	RecorderYaml string
+	FogBash      string
 }
 
 func (c *Client) CreateDrone(ctx context.Context, opts *CreateDroneOptions) error {
@@ -1118,6 +1122,18 @@ func (c *Client) CreateDrone(ctx context.Context, opts *CreateDroneOptions) erro
 		{
 			Name:  "MISSION_DATA_RECORDER_TOPICS",
 			Value: strings.Join(opts.MissionDataRecording.Topics, ","),
+		},
+		{
+			Name:  "DRONSOLE_COMMLINK_CONFIG",
+			Value: opts.CommlinkYaml,
+		},
+		{
+			Name:  "DRONSOLE_RECORDER_CONFIG",
+			Value: opts.RecorderYaml,
+		},
+		{
+			Name:  "DRONSOLE_FOG_BASH",
+			Value: opts.FogBash,
 		},
 	}
 
