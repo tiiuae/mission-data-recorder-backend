@@ -36,7 +36,7 @@ func registerRoutes(router *httprouter.Router, enableAuth bool) {
 	router.Handler(http.MethodDelete, "/simulations/:simulationName/missions/:missionSlug", auth(refreshSimulationExpiry(deleteMissionHandler)))
 	router.Handler(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/drones", auth(refreshSimulationExpiry(assignDroneHandler)))
 	router.Handler(http.MethodPost, "/simulations/:simulationName/missions/:missionSlug/backlog", auth(refreshSimulationExpiry(addBacklogItem)))
-	router.HandlerFunc(http.MethodGet, "/events/:droneID/*path", eventsHandler)
+	router.HandlerFunc(http.MethodGet, "/events/:registryID/:droneID/*path", eventsHandler)
 	router.HandlerFunc(http.MethodGet, "/healthz", healthz)
 }
 

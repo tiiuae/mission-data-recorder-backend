@@ -60,13 +60,25 @@ var (
 	cloudMode                     = false
 
 	missionDataRecorederBackendCloudURL = "https://mission-data-upload.webapi.sacplatform.com"
+	missionControlURL                   = "https://missions.webapi.sacplatform.com"
+	deviceManagementURL                 = "https://devices.webapi.sacplatform.com"
 )
 
 var (
-	projectID  = "auto-fleet-mgnt"
-	registryID = "fleet-registry"
-	region     = "europe-west1"
+	projectID = "auto-fleet-mgnt"
+	// registryID = "fleet-registry"
+	region = "europe-west1"
 )
+
+func getRegistryID(simulationType kube.SimulationType, simulationName string) string {
+	// TODO: fleet-registry -> tenantID
+	if simulationType == kube.SimulationGlobal {
+		return fmt.Sprintf("fleet-registry~s~%s", simulationName)
+	}
+
+	// Default standalone registryID
+	return "fleet-registry"
+}
 
 var (
 	standaloneMissionDataBucket       = "simulation-mission-data"
@@ -112,9 +124,11 @@ func init() {
 	flag.StringVar(&cloudSimulationCoordinatorURL, "simulation-coordinator-url", cloudSimulationCoordinatorURL, "URL of simulation-coordinator instance in the cloud")
 	flag.BoolVar(&cloudMode, "cloud-mode", cloudMode, "If true, subscribes to the Google Pub/Sub subscriptions specified by -events-subscription and provides them in an endpoint. If false, uses mqtt-broker found in local Kubernetes cluster.")
 	flag.StringVar(&missionDataRecorederBackendCloudURL, "mission-data-recorder-backend-url", missionDataRecorederBackendCloudURL, "URL of mission data recorder backend server")
+	flag.StringVar(&missionControlURL, "mission-control-url", missionControlURL, "URL of mission control backend server")
+	flag.StringVar(&deviceManagementURL, "device-management-url", deviceManagementURL, "URL of device management backend server")
 
 	flag.StringVar(&projectID, "project-id", projectID, "Google Cloud project ID")
-	flag.StringVar(&registryID, "registry-id", registryID, "Google Cloud IoT Core registry ID")
+	// flag.StringVar(&registryID, "registry-id", registryID, "Google Cloud IoT Core registry ID")
 	flag.StringVar(&region, "region", region, "Google Cloud region")
 
 	flag.StringVar(&standaloneMissionDataBucket, "standalone-mission-data-bucket", standaloneMissionDataBucket, "Name of the bucket where mission data is stored in standalone simulations")

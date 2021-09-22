@@ -211,7 +211,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			opts.Cloud = &kube.MissionDataRecorderBackendCloudOptions{
 				ProjectID:        projectID,
-				RegistryID:       registryID,
+				RegistryID:       getRegistryID(simType, request.Name),
 				Region:           region,
 				Bucket:           standaloneMissionDataBucket,
 				JSONKey:          missionDataRecorderBackendKey,
@@ -259,7 +259,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		header := http.Header{}
 		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
 		tenantID := fmt.Sprintf("fleet-registry~s~%s", request.Name)
-		err = provisioning.CreateTenant(tenantID, header)
+		err = provisioning.CreateTenant(deviceManagementURL, tenantID, header)
 		if err != nil {
 			creationError = fmt.Errorf("Could not create tenant: %w", err)
 			return
@@ -294,7 +294,7 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		header := http.Header{}
 		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
 		tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
-		err = provisioning.DeleteTenant(tenantID, header)
+		err = provisioning.DeleteTenant(deviceManagementURL, tenantID, header)
 		if err != nil {
 			writeServerError(w, "Could not delete tenant", err)
 			return
@@ -444,7 +444,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			header := http.Header{}
 			header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
 			tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
-			settings, err := provisioning.CreateDrone(tenantID, request.DroneID, header)
+			settings, err := provisioning.CreateDrone(deviceManagementURL, tenantID, request.DroneID, header)
 			if err != nil {
 				writeBadRequest(w, "drone provisioning failed", nil)
 				return
@@ -786,8 +786,9 @@ func commandDroneHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
+	registryID := getRegistryID(simType, simulationName)
 	defer client.Close()
-	err = client.SendCommand(c, simulationName, droneID, "control", obj{
+	err = client.SendCommand(c, simulationName, registryID, droneID, "control", obj{
 		"Command":   req.Command,
 		"Timestamp": time.Now(),
 	})
@@ -895,8 +896,9 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
+	registryID := getRegistryID(simType, simulationName)
 	defer client.Close()
-	err = client.SendCommand(ctx, simulationName, droneID, "videostream", obj{
+	err = client.SendCommand(ctx, simulationName, registryID, droneID, "videostream", obj{
 		"Command": "start",
 		"Address": urlWithAuth(videoServer),
 	})

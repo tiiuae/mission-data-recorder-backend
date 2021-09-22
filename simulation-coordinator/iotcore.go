@@ -37,7 +37,7 @@ type subscriptionCallback = func(*subscriptionMessage)
 
 type iotCoreAPI interface {
 	io.Closer
-	SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error
+	SendCommand(ctx context.Context, simulation, registryID, deviceID, subfolder string, message interface{}) error
 	Subscribe(ctx context.Context, simulation, deviceID, subfolder string, callback subscriptionCallback) error
 }
 
@@ -107,7 +107,7 @@ type deviceIDJWTClaim struct {
 	DeviceID string `json:"device_id"`
 }
 
-func (p *cloudiotAPI) GetDeviceCredentials(ctx context.Context, deviceID, alg string) (interface{}, error) {
+func (p *cloudiotAPI) getDeviceCredentials(ctx context.Context, registryID, deviceID, alg string) (interface{}, error) {
 	iot, err := p.getIOTClient(ctx)
 	if err != nil {
 		return nil, err
@@ -150,7 +150,7 @@ func (p *cloudiotAPI) Close() error {
 	return nil
 }
 
-func (p *cloudiotAPI) SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error {
+func (p *cloudiotAPI) SendCommand(ctx context.Context, simulation, registryID, deviceID, subfolder string, message interface{}) error {
 	msg, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -161,6 +161,7 @@ func (p *cloudiotAPI) SendCommand(ctx context.Context, simulation, deviceID, sub
 			return err
 		}
 		return postJSON(ctx, cloudSimulationCoordinatorURL+"/commands", header, nil, obj{
+			"registry":  registryID,
 			"subfolder": subfolder,
 			"message":   string(msg),
 		})
@@ -312,7 +313,7 @@ func (p *mqttPublisher) Close() error {
 	return nil
 }
 
-func (p *mqttPublisher) SendCommand(ctx context.Context, simulation, deviceID, subfolder string, message interface{}) error {
+func (p *mqttPublisher) SendCommand(ctx context.Context, simulation, registryID, deviceID, subfolder string, message interface{}) error {
 	msg, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -372,10 +373,11 @@ func eventsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	params := httprouter.ParamsFromContext(ctx)
+	registryID := params.ByName("registryID")
 	droneID := params.ByName("droneID")
 	path := params.ByName("path")
 
-	allowedDeviceID, err := validateDeviceAuthHeader(r)
+	allowedDeviceID, err := validateDeviceAuthHeader(r, registryID)
 	if err != nil {
 		writeUnauthorized(w, "nonexistent or invalid JWT", err)
 		return
@@ -415,12 +417,12 @@ func signDroneJWT(deviceID string, privateKey []byte) (string, error) {
 	}).SignedString(key)
 }
 
-func validateDeviceAuthHeader(r *http.Request) (string, error) {
+func validateDeviceAuthHeader(r *http.Request, registryID string) (string, error) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	var deviceID string
 	_, err := jwt.ParseWithClaims(token, &deviceIDJWTClaim{}, func(t *jwt.Token) (interface{}, error) {
 		deviceID = t.Claims.(*deviceIDJWTClaim).DeviceID
-		return cloudiotAPIClient.GetDeviceCredentials(r.Context(), deviceID, t.Method.Alg())
+		return cloudiotAPIClient.getDeviceCredentials(r.Context(), registryID, deviceID, t.Method.Alg())
 	})
 	if err != nil {
 		return "", err
@@ -436,14 +438,15 @@ func (s jsonString) MarshalJSON() ([]byte, error) {
 
 func sendCommandHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Subfolder string `json:"subfolder"`
-		Message   string `json:"message"`
+		RegistryID string `json:"registry"`
+		Subfolder  string `json:"subfolder"`
+		Message    string `json:"message"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "body must be valid JSON", err)
 		return
 	}
-	deviceID, err := validateDeviceAuthHeader(r)
+	deviceID, err := validateDeviceAuthHeader(r, req.RegistryID)
 	if err != nil {
 		writeUnauthorized(w, "nonexistent or invalid JWT", err)
 		return
@@ -457,6 +460,7 @@ func sendCommandHandler(w http.ResponseWriter, r *http.Request) {
 	err = cloudiotAPIClient.SendCommand(
 		r.Context(),
 		"",
+		req.RegistryID,
 		deviceID,
 		req.Subfolder,
 		jsonString(req.Message),
