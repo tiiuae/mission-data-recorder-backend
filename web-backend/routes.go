@@ -10,6 +10,7 @@ import (
 )
 
 func registerRoutes(router *httprouter.Router) {
+	router.HandlerFunc(http.MethodGet, "/tenants", getTenants)
 	router.HandlerFunc(http.MethodGet, "/subscribe", subscribeWebsocket)
 	router.HandlerFunc(http.MethodGet, "/subscribe/gpstrail", subscribeGpsTrail)
 	router.HandlerFunc(http.MethodPost, "/drones/:droneID/debug/start-mission", debugStartMission)

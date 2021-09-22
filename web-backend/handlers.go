@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,7 @@ var navigationModeMap = map[uint8]string{
 }
 
 type subscriber struct {
+	tenantID        string
 	messages        chan []byte
 	closeConnection func()
 }
@@ -92,13 +94,14 @@ func getDronesMinikube(w http.ResponseWriter, r *http.Request) {
 }
 
 func getDronesCloud(w http.ResponseWriter, r *http.Request) {
+	tenantID := getTenantID(r)
 	client, err := cloudiot.NewService(r.Context())
 	if err != nil {
 		writeError(w, "Could not create IoT client", err, http.StatusInternalServerError)
 		return
 	}
 
-	parent := fmt.Sprintf("projects/%s/locations/%s/registries/%s", projectID, "europe-west1", "fleet-registry")
+	parent := fmt.Sprintf("projects/%s/locations/%s/registries/%s", projectID, "europe-west1", tenantID)
 	call := client.Projects.Locations.Registries.Devices.List(parent)
 	call.FieldMask("lastHeartbeatTime,lastEventTime,lastStateTime,metadata")
 	devices, err := call.Do()
@@ -110,6 +113,42 @@ func getDronesCloud(w http.ResponseWriter, r *http.Request) {
 	var response []string
 	for _, drone := range devices.Devices {
 		response = append(response, drone.Id)
+	}
+	writeJSON(w, response)
+}
+
+type Tenant struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+func getTenants(w http.ResponseWriter, r *http.Request) {
+	client, err := cloudiot.NewService(r.Context())
+	if err != nil {
+		writeError(w, "Could not create IoT client", err, http.StatusInternalServerError)
+		return
+	}
+
+	parent := fmt.Sprintf("projects/%s/locations/%s", projectID, "europe-west1")
+	call := client.Projects.Locations.Registries.List(parent)
+	res, err := call.Do()
+	if err != nil {
+		writeError(w, "Unable to list tenants", err, http.StatusInternalServerError)
+		return
+	}
+
+	var response []Tenant
+	for _, reg := range res.DeviceRegistries {
+		x := reg.Id
+		s := strings.Split(x, "~")
+		if len(s) == 1 {
+			response = append(response, Tenant{x, s[0], "live"})
+		} else if len(s) == 2 && s[1] == "r" {
+			response = append(response, Tenant{x, s[0], "live"})
+		} else if len(s) == 3 && s[1] == "s" {
+			response = append(response, Tenant{x, s[0] + "/" + s[2], "sim"})
+		}
 	}
 	writeJSON(w, response)
 }
@@ -143,6 +182,7 @@ func debugStartMission(w http.ResponseWriter, r *http.Request) {
 
 func subscribeWebsocket(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
+	tenantID := getTenantID(r)
 	// accept websocket
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: []string{"localhost:8080", "demo.sacplatform.com", "staging.sacplatform.com", "sacplatform.com"},
@@ -155,6 +195,7 @@ func subscribeWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	// create subscriber
 	s := subscriber{
+		tenantID: tenantID,
 		messages: make(chan []byte, 32), // buffer of 32 messages
 		closeConnection: func() {
 			conn.Close(websocket.StatusPolicyViolation, "connection too slow to keep up with messages")
@@ -201,10 +242,13 @@ func removeSubscriber(s *subscriber) {
 	subscribersMu.Unlock()
 }
 
-func publishMessage(message []byte) {
+func publishMessage(tenantID string, message []byte) {
 	subscribersMu.Lock()
 	defer subscribersMu.Unlock()
 	for s := range subscribers {
+		if s.tenantID != tenantID {
+			continue
+		}
 		select {
 		case s.messages <- message:
 		default:
@@ -216,6 +260,7 @@ func publishMessage(message []byte) {
 
 func subscribeGpsTrail(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
+	tenantID := getTenantID(r)
 	deviceIDs := r.URL.Query()["id"]
 	// accept websocket
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -232,7 +277,7 @@ func subscribeGpsTrail(w http.ResponseWriter, r *http.Request) {
 	close := func() {
 		conn.Close(websocket.StatusPolicyViolation, "connection too slow to keep up with messages")
 	}
-	gt.Subscribe(id, inbox, close)
+	gt.Subscribe(id, tenantID, inbox, close)
 	defer gt.Unsubscribe(id)
 
 	for {
@@ -272,15 +317,15 @@ func containsString(key string, values []string) bool {
 	return false
 }
 
-func handleMQTTEvent(deviceID string, topic string, payload []byte) {
-	log.Printf("Event: %s %s\n", deviceID, topic)
+func handleMQTTEvent(tenantID string, deviceID string, topic string, payload []byte) {
+	// log.Printf("Event: %s %s [ %s ]\n", deviceID, topic, tenantID)
 	switch topic {
 	case "telemetry":
-		go handleTelemetryEvent(context.Background(), deviceID, payload)
+		go handleTelemetryEvent(context.Background(), tenantID, deviceID, payload)
 	case "debug-values":
-		go handleDebugValues(context.Background(), deviceID, payload)
+		go handleDebugValues(context.Background(), tenantID, deviceID, payload)
 	case "debug-events":
-		go handleDebugEvent(context.Background(), deviceID, payload)
+		go handleDebugEvent(context.Background(), tenantID, deviceID, payload)
 	}
 }
 
@@ -319,7 +364,7 @@ type debugValue struct {
 	Updated time.Time `json:"updated"`
 }
 
-func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
+func handleTelemetryEvent(c context.Context, tenantID string, deviceID string, payload []byte) {
 	var telemetry struct {
 		Timestamp int64
 		MessageID string
@@ -377,14 +422,14 @@ func handleTelemetryEvent(c context.Context, deviceID string, payload []byte) {
 		},
 	})
 
-	go publishMessage(msg)
+	go publishMessage(tenantID, msg)
 
 	if telemetry.LocationUpdated {
-		gt.Post(&gpstrail.Position{Device: deviceID, Timestamp: time.Now(), Lat: telemetry.Lat, Lon: telemetry.Lon})
+		gt.Post(&gpstrail.Position{TenantID: tenantID, Device: deviceID, Timestamp: time.Now(), Lat: telemetry.Lat, Lon: telemetry.Lon})
 	}
 }
 
-func handleDebugValues(c context.Context, deviceID string, payload []byte) {
+func handleDebugValues(c context.Context, tenantID string, deviceID string, payload []byte) {
 	var dv map[string]debugValue
 	err := json.Unmarshal(payload, &dv)
 	if err != nil {
@@ -407,10 +452,10 @@ func handleDebugValues(c context.Context, deviceID string, payload []byte) {
 		Device:  deviceID,
 		Payload: dvs,
 	})
-	go publishMessage(msg)
+	go publishMessage(tenantID, msg)
 }
 
-func handleDebugEvent(c context.Context, deviceID string, payload []byte) {
+func handleDebugEvent(c context.Context, tenantID string, deviceID string, payload []byte) {
 	var de debugEvent
 	err := json.Unmarshal(payload, &de)
 	if err != nil {
@@ -423,5 +468,14 @@ func handleDebugEvent(c context.Context, deviceID string, payload []byte) {
 		Device:  deviceID,
 		Payload: de,
 	})
-	go publishMessage(msg)
+	go publishMessage(tenantID, msg)
+}
+
+func getTenantID(r *http.Request) string {
+	tid := r.URL.Query().Get("tid")
+	if tid == "" {
+		return "fleet-registry"
+	}
+
+	return tid
 }

@@ -41,7 +41,7 @@ func listenMQTTEvents(client mqtt.Client) {
 		deviceID := strings.Split(t, "/")[0]
 		topic := strings.TrimPrefix(t, deviceID+"/")
 		if strings.HasPrefix(topic, "events") {
-			handleMQTTEvent(deviceID, strings.TrimPrefix(topic, "events/"), msg.Payload())
+			handleMQTTEvent("fleet-registry", deviceID, strings.TrimPrefix(topic, "events/"), msg.Payload())
 		}
 	})
 

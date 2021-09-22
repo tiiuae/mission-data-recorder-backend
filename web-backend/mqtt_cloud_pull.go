@@ -22,6 +22,12 @@ func pullIoTCoreMessages(subscription string) {
 
 	go func() {
 		for msg := range messages {
+			tenantID, ok := msg.Attributes["deviceRegistryId"]
+			if !ok {
+				log.Printf("Pubsub message '%s' doesn't contain attribute deviceRegistryId", msg.ID)
+				msg.Ack()
+				return
+			}
 			deviceID, ok := msg.Attributes["deviceId"]
 			if !ok {
 				log.Printf("Pubsub message '%s' doesn't contain attribute deviceId", msg.ID)
@@ -35,7 +41,7 @@ func pullIoTCoreMessages(subscription string) {
 				return
 			}
 
-			handleMQTTEvent(deviceID, topic, msg.Data)
+			handleMQTTEvent(tenantID, deviceID, topic, msg.Data)
 			msg.Ack()
 		}
 	}()
