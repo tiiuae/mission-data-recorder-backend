@@ -31,7 +31,6 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
-	"github.com/tiiuae/fleet-management/simulation-coordinator/provisioning"
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -256,17 +255,6 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Simulation started")
 
-	if simType == kube.SimulationGlobal {
-		header := http.Header{}
-		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
-		tenantID := fmt.Sprintf("fleet-registry~s~%s", request.Name)
-		err = provisioning.CreateTenant(tenantID, header)
-		if err != nil {
-			creationError = fmt.Errorf("Could not create tenant: %w", err)
-			return
-		}
-	}
-
 	writeJSON(w, obj{"name": request.Name})
 	creationSucceeded = true
 }
@@ -276,30 +264,13 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
 
-	simType, err := client.GetSimulationType(c, simulationName)
-	if errors.Is(err, kube.ErrSimulationDoesntExist) {
-		writeNotFound(w, "Simulation doesn't exist", nil)
-		return
-	}
-
-	err = client.RemoveSimulation(c, simulationName)
+	err := client.RemoveSimulation(c, simulationName)
 	if errors.Is(err, kube.ErrSimulationDoesntExist) {
 		writeNotFound(w, "Simulation doesn't exist", nil)
 		return
 	} else if err != nil {
 		writeServerError(w, "Could not delete simulation", err)
 		return
-	}
-
-	if simType == kube.SimulationGlobal {
-		header := http.Header{}
-		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
-		tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
-		err = provisioning.DeleteTenant(tenantID, header)
-		if err != nil {
-			writeServerError(w, "Could not delete tenant", err)
-			return
-		}
 	}
 }
 
@@ -448,21 +419,6 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Provision drone to IOT Core
-			header := http.Header{}
-			header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
-			tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
-			settings, err := provisioning.CreateDrone(tenantID, request.DroneID, header)
-			if err != nil {
-				writeBadRequest(w, "drone provisioning failed", nil)
-				return
-			}
-
-			opts.CommlinkYaml = settings.CommlinkYaml
-			opts.RecorderYaml = settings.RecorderYaml
-			opts.FogBash = settings.FogBash
-			opts.PrivateKey = string(settings.PrivateKey) // key from device-management
-
 			opts.MQTTBrokerAddress = mqttServerURL
 			opts.RTSPServerAddress = urlWithAuth(*videoServerURL.URL)
 			opts.MissionDataRecording.BackendURL = missionDataRecorederBackendCloudURL
@@ -496,20 +452,11 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				videoSvc.Spec.Ports[0].Port,
 			)
 			opts.MissionDataRecording.BackendURL = "http://mission-data-recorder-backend-svc"
-
-			settings, err := provisioning.CreateDroneStandalone(request.DroneID, request.RecordTopics, request.RecordSizeThreshold, opts.RTSPServerAddress)
-			if err != nil {
-				writeBadRequest(w, "drone provisioning failed", nil)
-				return
-			}
-			opts.CommlinkYaml = settings.CommlinkYaml
-			opts.RecorderYaml = settings.RecorderYaml
-			opts.FogBash = settings.FogBash
-			opts.PrivateKey = request.PrivateKey // generated key
 		default:
 			panic("invalid simulation type: " + simType)
 		}
 		opts.DeviceID = request.DroneID
+		opts.PrivateKey = request.PrivateKey
 		err = client.CreateDrone(c, opts)
 		if err != nil {
 			if errors.Is(err, kube.ErrDroneExists) {
