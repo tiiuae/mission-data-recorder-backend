@@ -499,7 +499,6 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			panic("invalid simulation type: " + simType)
 		}
 		opts.DeviceID = request.DroneID
-		opts.PrivateKey = request.PrivateKey
 		err = client.CreateDrone(c, opts)
 		if err != nil {
 			if errors.Is(err, kube.ErrDroneExists) {
