@@ -18,9 +18,7 @@ type ProvisioningSettings struct {
 	FogBash      string
 }
 
-func CreateTenant(tenantID string, header http.Header) error {
-	baseURL := "https://devices.webapi.sacplatform.com"
-
+func CreateTenant(baseURL string, tenantID string, header http.Header) error {
 	url := fmt.Sprintf("%s/tenants/%s", baseURL, tenantID)
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
@@ -39,9 +37,7 @@ func CreateTenant(tenantID string, header http.Header) error {
 	return nil
 }
 
-func DeleteTenant(tenantID string, header http.Header) error {
-	baseURL := "https://devices.webapi.sacplatform.com"
-
+func DeleteTenant(baseURL string, tenantID string, header http.Header) error {
 	url := fmt.Sprintf("%s/tenants/%s", baseURL, tenantID)
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
@@ -60,9 +56,7 @@ func DeleteTenant(tenantID string, header http.Header) error {
 	return nil
 }
 
-func CreateDrone(tenantID string, deviceName string, header http.Header) (*ProvisioningSettings, error) {
-	baseURL := "https://devices.webapi.sacplatform.com"
-
+func CreateDrone(baseURL string, tenantID string, deviceName string, header http.Header) (*ProvisioningSettings, error) {
 	initData, err := devicesGetInitData(baseURL, tenantID, deviceName, header)
 	if err != nil {
 		return nil, err

@@ -31,6 +31,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/julienschmidt/httprouter"
 	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
+	"github.com/tiiuae/fleet-management/simulation-coordinator/provisioning"
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -211,7 +212,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			opts.Cloud = &kube.MissionDataRecorderBackendCloudOptions{
 				ProjectID:        projectID,
-				RegistryID:       registryID,
+				RegistryID:       getRegistryID(simType, request.Name),
 				Region:           region,
 				Bucket:           standaloneMissionDataBucket,
 				JSONKey:          missionDataRecorderBackendKey,
@@ -255,6 +256,17 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Simulation started")
 
+	if simType == kube.SimulationGlobal {
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
+		tenantID := fmt.Sprintf("fleet-registry~s~%s", request.Name)
+		err = provisioning.CreateTenant(deviceManagementURL, tenantID, header)
+		if err != nil {
+			creationError = fmt.Errorf("Could not create tenant: %w", err)
+			return
+		}
+	}
+
 	writeJSON(w, obj{"name": request.Name})
 	creationSucceeded = true
 }
@@ -263,14 +275,30 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	params := httprouter.ParamsFromContext(c)
 	simulationName := params.ByName("simulationName")
+	simType, err := client.GetSimulationType(c, simulationName)
+	if err != nil {
+		writeServerError(w, "failed to get simulation type", err)
+		return
+	}
 
-	err := client.RemoveSimulation(c, simulationName)
+	err = client.RemoveSimulation(c, simulationName)
 	if errors.Is(err, kube.ErrSimulationDoesntExist) {
 		writeNotFound(w, "Simulation doesn't exist", nil)
 		return
 	} else if err != nil {
 		writeServerError(w, "Could not delete simulation", err)
 		return
+	}
+
+	if simType == kube.SimulationGlobal {
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
+		tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
+		err = provisioning.DeleteTenant(deviceManagementURL, tenantID, header)
+		if err != nil {
+			writeServerError(w, "Could not delete tenant", err)
+			return
+		}
 	}
 }
 
@@ -418,6 +446,21 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				writeBadRequest(w, "drone ID is required for non-standalone simulations", nil)
 				return
 			}
+
+			// Provision drone to IOT Core
+			header := http.Header{}
+			header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
+			tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
+			settings, err := provisioning.CreateDrone(deviceManagementURL, tenantID, request.DroneID, header)
+			if err != nil {
+				writeBadRequest(w, "drone provisioning failed", nil)
+				return
+			}
+
+			opts.CommlinkYaml = settings.CommlinkYaml
+			opts.RecorderYaml = settings.RecorderYaml
+			opts.FogBash = settings.FogBash
+			opts.PrivateKey = string(settings.PrivateKey) // key from device-management
 
 			opts.MQTTBrokerAddress = mqttServerURL
 			opts.RTSPServerAddress = urlWithAuth(*videoServerURL.URL)
@@ -741,8 +784,9 @@ func commandDroneHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
+	registryID := getRegistryID(simType, simulationName)
 	defer client.Close()
-	err = client.SendCommand(c, simulationName, droneID, "control", obj{
+	err = client.SendCommand(c, simulationName, registryID, droneID, "control", obj{
 		"Command":   req.Command,
 		"Timestamp": time.Now(),
 	})
@@ -850,8 +894,9 @@ func droneVideoStreamHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to connect to command server", err)
 		return
 	}
+	registryID := getRegistryID(simType, simulationName)
 	defer client.Close()
-	err = client.SendCommand(ctx, simulationName, droneID, "videostream", obj{
+	err = client.SendCommand(ctx, simulationName, registryID, droneID, "videostream", obj{
 		"Command": "start",
 		"Address": urlWithAuth(videoServer),
 	})

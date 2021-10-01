@@ -15,6 +15,7 @@ type GpsTrail struct {
 }
 
 type Position struct {
+	TenantID  string    `json:"-"`
 	Device    string    `json:"device"`
 	Timestamp time.Time `json:"timestamp"`
 	Lat       float64   `json:"lat"`
@@ -22,17 +23,18 @@ type Position struct {
 }
 
 type add struct {
-	ID    string
-	Inbox chan<- []*Position
-	Close func()
+	ID       string
+	TenantID string
+	Inbox    chan<- []*Position
+	Close    func()
 }
 
 type remove struct {
 	ID string
 }
 
-func (gt *GpsTrail) Subscribe(id string, inbox chan<- []*Position, close func()) {
-	gt.inbox <- &add{id, inbox, close}
+func (gt *GpsTrail) Subscribe(id string, tenantID string, inbox chan<- []*Position, close func()) {
+	gt.inbox <- &add{id, tenantID, inbox, close}
 }
 
 func (gt *GpsTrail) Unsubscribe(id string) {
@@ -46,14 +48,14 @@ func (gt *GpsTrail) Post(pos *Position) {
 func New() *GpsTrail {
 	inbox := make(chan interface{}, 10)
 	go func() {
-		latestPositions := make(map[string]*Position, 0)
+		latestPositions := make(map[string]*Position)
 		queue := make([]*Position, 0)
 		subscribers := make(map[string]*add)
 		for x := range inbox {
 			switch m := x.(type) {
 			case *add:
 				subscribers[m.ID] = m
-				m.Inbox <- queue
+				m.Inbox <- tenantFilter(queue, m.TenantID)
 			case *remove:
 				delete(subscribers, m.ID)
 			case *Position:
@@ -63,6 +65,9 @@ func New() *GpsTrail {
 					latestPositions[m.Device] = m
 					queue = append(queue, m)
 					for _, v := range subscribers {
+						if m.TenantID != v.TenantID {
+							continue
+						}
 						select {
 						case v.Inbox <- []*Position{m}:
 						default:
@@ -92,6 +97,17 @@ func New() *GpsTrail {
 func addToTrail(previous, current *Position, t time.Time) bool {
 	return previous.Timestamp.Before(t) ||
 		distance(previous.Lon, previous.Lat, current.Lon, current.Lat) > markerDistance
+}
+
+func tenantFilter(source []*Position, tenantID string) []*Position {
+	dest := make([]*Position, 0)
+	for _, x := range source {
+		if x.TenantID == tenantID {
+			dest = append(dest, x)
+		}
+	}
+
+	return dest
 }
 
 const earthRadiusMetres float64 = 6371000

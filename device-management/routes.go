@@ -21,6 +21,10 @@ func registerRoutes(router *httprouter.Router) {
 	router.HandlerFunc(http.MethodGet, "/devices", listDevices)
 	router.HandlerFunc(http.MethodGet, "/devices/:deviceID", getDevice)
 	router.HandlerFunc(http.MethodDelete, "/devices/:deviceID", deleteDevice)
+
+	// Tenants (registries)
+	router.HandlerFunc(http.MethodPost, "/tenants/:tenantID", createTenant)
+	router.HandlerFunc(http.MethodDelete, "/tenants/:tenantID", deleteTenant)
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

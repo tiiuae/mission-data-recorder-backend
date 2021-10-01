@@ -11,35 +11,26 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/julienschmidt/httprouter"
+	"github.com/pkg/errors"
 	"github.com/tiiuae/fleet-management/simulation-coordinator/kube"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
-var globalMissionsURL *url.URL
-
-func init() {
-	var err error
-	globalMissionsURL, err = url.Parse("https://missions.webapi.sacplatform.com")
+func getMissionsURL(ctx context.Context, simulationName string, path string) (string, error) {
+	simType, err := client.GetSimulationType(ctx, simulationName)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-}
 
-func getMissionsURL(ctx context.Context, sim string) (*url.URL, error) {
-	simType, err := client.GetSimulationType(ctx, sim)
-	if err != nil {
-		return nil, err
-	}
+	registryID := getRegistryID(simType, simulationName)
+
 	switch simType {
 	case kube.SimulationGlobal:
-		return globalMissionsURL, nil
+		return fmt.Sprintf("%s%s?tid=%s", missionControlURL, path, registryID), nil
 	case kube.SimulationStandalone:
-		return &url.URL{
-			Scheme: "http",
-			Host:   "mission-control-svc." + sim + ":8082",
-		}, nil
+		return fmt.Sprintf("http://mission-control-svc.%s:8082%s?tid=%s", simulationName, path, registryID), nil
 	default:
-		panic("invalid simulation type: " + string(simType))
+		return "", errors.Errorf("invalid simulation type: " + string(simType))
 	}
 }
 
@@ -106,12 +97,11 @@ type mission struct {
 }
 
 func getMissions(ctx context.Context, simulationName string) ([]mission, error) {
-	missionsURL, err := getMissionsURL(ctx, simulationName)
+	url, err := getMissionsURL(ctx, simulationName, "/missions")
 	if err != nil {
 		return nil, err
 	}
 	var resp []mission
-	url := missionsURL.String() + "/missions"
 	if err = getJSON(ctx, url, &resp); err != nil {
 		return nil, err
 	}
@@ -130,13 +120,19 @@ func getMissionsHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to get missions", err)
 		return
 	}
-	missionsURL, err := getMissionsURL(r.Context(), simulationName)
+	missionsURL, err := getMissionsURL(r.Context(), simulationName, "")
 	if err != nil {
 		writeServerError(w, "failed to get missions", err)
 		return
 	}
+	url, err := url.Parse(missionsURL)
+	if err != nil {
+		writeServerError(w, "failed to get missions", err)
+		return
+	}
+
 	writeJSON(w, obj{
-		"mission_controller_hostname": missionsURL.Hostname(),
+		"mission_controller_hostname": url.Hostname(),
 		"missions":                    resp,
 	})
 }
@@ -168,7 +164,7 @@ func createMissionHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		req.Name = req.Slug
 	}
-	missionsURL, err := getMissionsURL(r.Context(), simulationName)
+	url, err := getMissionsURL(r.Context(), simulationName, "/missions")
 	if k8serrors.IsNotFound(err) {
 		writeNotFound(w, "simulation doesn't exist", err)
 		return
@@ -176,7 +172,6 @@ func createMissionHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "failed to create mission", err)
 		return
 	}
-	url := missionsURL.String() + "/missions"
 	if err = postJSON(r.Context(), url, nil, nil, &req); err != nil {
 		writeServerError(w, "failed to create mission", err)
 		return
@@ -189,7 +184,7 @@ func deleteMissionHandler(w http.ResponseWriter, r *http.Request) {
 	simulationName := params.ByName("simulationName")
 	missionSlug := params.ByName("missionSlug")
 
-	missionsURL, err := getMissionsURL(r.Context(), simulationName)
+	url, err := getMissionsURL(r.Context(), simulationName, "/missions/"+missionSlug)
 	if k8serrors.IsNotFound(err) {
 		writeNotFound(w, "simulation doesn't exist", err)
 		return
@@ -197,7 +192,6 @@ func deleteMissionHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "could not generate mission slug", err)
 		return
 	}
-	url := missionsURL.String() + "/missions/" + missionSlug
 	if err = deleteJSON(r.Context(), url, nil, nil); err != nil {
 		writeServerError(w, "failed to delete mission", err)
 		return
@@ -216,7 +210,7 @@ func assignDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	missionsURL, err := getMissionsURL(r.Context(), simulationName)
+	url, err := getMissionsURL(r.Context(), simulationName, "/missions/"+missionSlug+"/drones")
 	if k8serrors.IsNotFound(err) {
 		writeNotFound(w, "simulation doesn't exist", err)
 		return
@@ -224,7 +218,6 @@ func assignDroneHandler(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "could not generate mission slug", err)
 		return
 	}
-	url := missionsURL.String() + "/missions/" + missionSlug + "/drones"
 	if err = postJSON(r.Context(), url, nil, nil, &req); err != nil {
 		writeServerError(w, "failed to assign drone to mission", err)
 		return
@@ -241,7 +234,7 @@ func addBacklogItem(w http.ResponseWriter, r *http.Request) {
 		writeInvalidJSON(w, err)
 		return
 	}
-	missionsURL, err := getMissionsURL(r.Context(), simulationName)
+	url, err := getMissionsURL(r.Context(), simulationName, "/missions/"+missionSlug+"/backlog")
 	if k8serrors.IsNotFound(err) {
 		writeNotFound(w, "simulation doesn't exist", err)
 		return
@@ -249,7 +242,6 @@ func addBacklogItem(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, "could not generate mission slug", err)
 		return
 	}
-	url := missionsURL.String() + "/missions/" + missionSlug + "/backlog"
 	if err = postJSON(r.Context(), url, nil, nil, &req); err != nil {
 		writeServerError(w, "failed to assign drone to mission", err)
 		return

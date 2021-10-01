@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -46,12 +45,13 @@ func getDeviceSettings(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	params := httprouter.ParamsFromContext(c)
 	deviceID := params.ByName("deviceID")
+	tenantID := getTenantID(r)
 
 	res := deviceSettings{
 		DeviceID: deviceID,
 		CommlinkSettings: commlinkSettings{
 			MqttServer:   "ssl://mqtt.googleapis.com:8883",
-			MqttClientID: fmt.Sprintf("%s/devices/%s", registryPath(), deviceID),
+			MqttClientID: fmt.Sprintf("%s/devices/%s", registryPath(tenantID), deviceID),
 			MqttAudience: projectID(),
 		},
 		RecorderSettings: recorderSettings{
@@ -71,24 +71,18 @@ func getDeviceSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func listDevices(w http.ResponseWriter, r *http.Request) {
+	tenantID := getTenantID(r)
+
 	client, err := cloudiot.NewService(r.Context())
 	if err != nil {
 		writeError(w, "Failed create IOT client", err, http.StatusInternalServerError)
 		return
 	}
 
-	call := client.Projects.Locations.Registries.Devices.List(registryPath())
-	call.FieldMask("lastHeartbeatTime,lastEventTime,lastStateTime,metadata")
-	devices, err := call.Do()
+	result, err := listIotDevices(client, tenantID)
 	if err != nil {
-		writeError(w, "Failed create list devices", err, http.StatusInternalServerError)
+		writeError(w, "Failed to list devices", err, http.StatusInternalServerError)
 		return
-	}
-
-	result := make([]deviceInfo, 0)
-
-	for _, device := range devices.Devices {
-		result = append(result, deviceInfo{device.Id})
 	}
 
 	writeJSON(w, result)
@@ -98,6 +92,7 @@ func getDevice(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	params := httprouter.ParamsFromContext(c)
 	deviceID := params.ByName("deviceID")
+	tenantID := getTenantID(r)
 
 	client, err := cloudiot.NewService(r.Context())
 	if err != nil {
@@ -105,7 +100,7 @@ func getDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	call := client.Projects.Locations.Registries.Devices.Get(fmt.Sprintf("%s/devices/%s", registryPath(), deviceID))
+	call := client.Projects.Locations.Registries.Devices.Get(fmt.Sprintf("%s/devices/%s", registryPath(tenantID), deviceID))
 	device, err := call.Do()
 	if err != nil {
 		if e, ok := err.(*googleapi.Error); ok {
@@ -125,6 +120,7 @@ func deleteDevice(w http.ResponseWriter, r *http.Request) {
 	c := r.Context()
 	params := httprouter.ParamsFromContext(c)
 	deviceID := params.ByName("deviceID")
+	tenantID := getTenantID(r)
 
 	client, err := cloudiot.NewService(r.Context())
 	if err != nil {
@@ -132,8 +128,7 @@ func deleteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	call := client.Projects.Locations.Registries.Devices.Delete(fmt.Sprintf("%s/devices/%s", registryPath(), deviceID))
-	_, err = call.Do()
+	err = deleteIotDevice(client, tenantID, deviceID)
 	if err != nil {
 		if e, ok := err.(*googleapi.Error); ok {
 			if e.Code == 404 {
@@ -149,6 +144,8 @@ func deleteDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func createDevice(w http.ResponseWriter, r *http.Request) {
+	tenantID := getTenantID(r)
+
 	var request struct {
 		DeviceID    string `json:"device_id"`
 		Certificate []byte `json:"certificate"`
@@ -160,7 +157,13 @@ func createDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = createIoTDevice(r.Context(), request.DeviceID, request.Certificate)
+	client, err := cloudiot.NewService(r.Context())
+	if err != nil {
+		writeError(w, "Failed create IOT client", err, http.StatusInternalServerError)
+		return
+	}
+
+	err = createIotDevice(client, tenantID, request.DeviceID, request.Certificate)
 	if err != nil {
 		writeError(w, "Failed to create device", err, http.StatusConflict)
 		return
@@ -169,44 +172,16 @@ func createDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
-func createIoTDevice(ctx context.Context, deviceID string, certificate []byte) error {
-	client, err := cloudiot.NewService(ctx)
-	if err != nil {
-		return err
-	}
-
-	cfg := defaultConfiguration()
-	cfgStr, err := serializeConfig(cfg)
-	if err != nil {
-		return err
-	}
-
-	newDevice := &cloudiot.Device{
-		Blocked: false,
-		Config:  &cloudiot.DeviceConfig{BinaryData: cfgStr},
-		Credentials: []*cloudiot.DeviceCredential{
-			{
-				ExpirationTime: "",
-				PublicKey: &cloudiot.PublicKeyCredential{
-					Format: "RSA_X509_PEM",
-					Key:    string(certificate),
-				},
-			},
-		},
-		GatewayConfig: nil,
-		Id:            deviceID,
-	}
-
-	call := client.Projects.Locations.Registries.Devices.Create(registryPath(), newDevice)
-	_, err = call.Do()
-
-	return err
-}
-
-func registryPath() string {
+func projectPath() string {
 	projectID := projectID()
 	region := "europe-west1"
-	registryID := "fleet-registry"
+	return fmt.Sprintf("projects/%s/locations/%s", projectID, region)
+}
+
+func registryPath(tenantID string) string {
+	projectID := projectID()
+	region := "europe-west1"
+	registryID := tenantID
 	return fmt.Sprintf("projects/%s/locations/%s/registries/%s", projectID, region, registryID)
 }
 
@@ -239,4 +214,13 @@ func subdomain() string {
 	default:
 		return "sacplatform.com"
 	}
+}
+
+func getTenantID(r *http.Request) string {
+	tid := r.URL.Query().Get("tid")
+	if tid == "" {
+		return "fleet-registry"
+	}
+
+	return tid
 }
