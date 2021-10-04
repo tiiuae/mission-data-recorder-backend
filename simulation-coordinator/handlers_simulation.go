@@ -495,6 +495,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				videoSvc.Spec.Ports[0].Port,
 			)
 			opts.MissionDataRecording.BackendURL = "http://mission-data-recorder-backend-svc"
+			opts.PrivateKey = request.PrivateKey
 		default:
 			panic("invalid simulation type: " + simType)
 		}
