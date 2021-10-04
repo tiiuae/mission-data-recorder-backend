@@ -494,6 +494,15 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 				"@video-server-svc:",
 				videoSvc.Spec.Ports[0].Port,
 			)
+
+			settings, err := provisioning.CreateDroneStandalone(request.DroneID, request.RecordTopics, request.RecordSizeThreshold, opts.RTSPServerAddress)
+			if err != nil {
+				writeBadRequest(w, "drone provisioning failed", nil)
+				return
+			}
+			opts.CommlinkYaml = settings.CommlinkYaml
+			opts.RecorderYaml = settings.RecorderYaml
+			opts.FogBash = settings.FogBash
 			opts.MissionDataRecording.BackendURL = "http://mission-data-recorder-backend-svc"
 			opts.PrivateKey = request.PrivateKey
 		default:
