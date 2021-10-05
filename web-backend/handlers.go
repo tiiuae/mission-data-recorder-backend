@@ -185,7 +185,7 @@ func subscribeWebsocket(w http.ResponseWriter, r *http.Request) {
 	tenantID := getTenantID(r)
 	// accept websocket
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"localhost:8080", "demo.sacplatform.com", "staging.sacplatform.com", "sacplatform.com"},
+		OriginPatterns: []string{"localhost:8080", "demo.sacplatform.com", "staging.sacplatform.com", "sacplatform.com", "dev.sacplatform.com", "old-dev.sacplatform.com"},
 	})
 	if err != nil {
 		log.Printf("Unable to accept websocket: %v", err)
