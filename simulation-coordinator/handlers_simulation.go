@@ -166,7 +166,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = client.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, cloudMode)
+	err = client.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, cloudMode, outClusterMode)
 	if err != nil {
 		creationError = fmt.Errorf("failed to create gzserver: %w", err)
 		return
@@ -241,7 +241,12 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// start the simulation by calling the service
-	startURL := fmt.Sprintf("http://gzserver-svc.%s:8081/simulation/start", request.Name)
+	baseURL, err := getGZServerBaseURL(c, request.Name)
+	if err != nil {
+		creationError = err
+		return
+	}
+	startURL := baseURL + "/simulation/start"
 	// retry max 32 times
 	for i := 0; i < 32; i++ {
 		_, err = http.Post(startURL, "application/json", bytes.NewBuffer(requestBody))
@@ -544,7 +549,13 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	droneURL := fmt.Sprintf("http://gzserver-svc.%s:8081/simulation/drones", simulationName)
+	baseURL, err := getGZServerBaseURL(c, simulationName)
+	if err != nil {
+		writeServerError(w, "failed to add drone", err)
+		return
+	}
+
+	droneURL := baseURL + "/simulation/drones"
 	resp, err := http.Post(droneURL, "application/json", bytes.NewBuffer(requestBody))
 	if err != nil {
 		writeServerError(w, "Could not add drone to gzserver", err)
@@ -1138,4 +1149,16 @@ func getClaimsFromRequest(r *http.Request) (*userJWTClaims, error) {
 		return nil, errors.New("token is missing Subject field")
 	}
 	return &claims, nil
+}
+
+func getGZServerBaseURL(ctx context.Context, simulationName string) (string, error) {
+	if outClusterMode {
+		hostPort, err := waitHostPort(ctx, simulationName, "gzserver-public-svc")
+		if err != nil {
+			return "", err
+		}
+		return "http://" + hostPort, nil
+	}
+
+	return fmt.Sprintf("http://gzserver-svc.%s:8081", simulationName), nil
 }

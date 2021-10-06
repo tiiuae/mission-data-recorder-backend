@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const nonExpiringDuration = 100 * 365 * 24 * time.Hour
@@ -78,6 +80,7 @@ const (
 	videoServerPortOffset = 0
 	gzwebPortOffset       = 1
 	mqttServerPortOffset  = 2
+	gzserverPortOffset    = 3
 )
 
 type Client struct {
@@ -97,6 +100,29 @@ func NewInClusterConfig() (*Client, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+func NewOutClusterConfig() (*Client, error) {
+	homedir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	configpath := filepath.Join(homedir, ".kube", "config")
+
+	config, err := clientcmd.BuildConfigFromFlags("", configpath)
+	if err != nil {
+		return nil, err
+	}
+
+	c := &Client{PullPolicy: v1.PullNever}
+
+	c.Clientset, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	return c, err
 }
 
 func (c *Client) CopySecret(ctx context.Context, fromNamespace, fromName, toNamespace, toName string) error {
@@ -349,7 +375,7 @@ func (c *Client) RemoveExpiredSimulations(ctx context.Context) error {
 	return errs.ErrorOrNil()
 }
 
-func (c *Client) CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode bool) error {
+func (c *Client) CreateGZServer(ctx context.Context, namespace, gzserverImage, dataImage string, gpuMode SimulationGPUMode, cloudMode, outClusterMode bool) error {
 	// Volume definitions
 	volumeGazeboData := v1.Volume{
 		Name: "gazebo-data-vol",
@@ -491,11 +517,40 @@ func (c *Client) CreateGZServer(ctx context.Context, namespace, gzserverImage, d
 			Type:     v1.ServiceTypeClusterIP,
 		},
 	}
+
 	_, err := c.Clientset.AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
 	_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, service, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
+	if outClusterMode {
+		portRange, err := c.getPortRange(ctx, namespace)
+		if err != nil {
+			return err
+		}
+		publicService := &v1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "gzserver-public-svc",
+				Namespace: namespace,
+			},
+			Spec: v1.ServiceSpec{
+				Ports: []v1.ServicePort{{
+					Port:       portRange + gzserverPortOffset,
+					TargetPort: intstr.FromInt(8081),
+				}},
+				Selector: map[string]string{"app": "gzserver-pod"},
+				Type:     v1.ServiceTypeLoadBalancer,
+			},
+		}
+		_, err = c.Clientset.CoreV1().Services(namespace).Create(ctx, publicService, metav1.CreateOptions{})
+		if err != nil {
+			return err
+		}
+	}
 	return err
 }
 

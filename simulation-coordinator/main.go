@@ -100,7 +100,8 @@ var (
 	defaultExpiryDuration    = 2 * 24 * time.Hour
 	expiryCheckInterval      = time.Hour
 
-	enableAuth = true
+	enableAuth     = true
+	outClusterMode = false
 )
 
 func init() {
@@ -141,6 +142,7 @@ func init() {
 	flag.DurationVar(&defaultExpiryDuration, "simulation-expiry-duration", defaultExpiryDuration, "Simulations will be automatically removed after this duration if they have not been interacted with")
 	flag.DurationVar(&expiryCheckInterval, "expiry-check-interval", expiryCheckInterval, "How often simulations are checked for expiration")
 	flag.BoolVar(&enableAuth, "enable-auth", enableAuth, "If true, the API requires authentication using a JWT")
+	flag.BoolVar(&outClusterMode, "out-cluster", outClusterMode, "If true, uses out-of-cluster config")
 }
 
 func urlWithAuth(u url.URL) string {
@@ -209,13 +211,22 @@ func main() {
 
 	currentNamespace = os.Getenv("SIMULATION_COORDINATOR_NAMESPACE")
 	if currentNamespace == "" {
-		log.Fatalln("Environment variable SIMULATION_COORDINATOR_NAMESPACE is not defined")
+		currentNamespace = "dronsole"
+		log.Println("Environment variable SIMULATION_COORDINATOR_NAMESPACE is not defined -> defaulting to 'dronsole'")
 	}
 
 	var err error
-	client, err = kube.NewInClusterConfig()
-	if err != nil {
-		log.Fatalln("failed to create Kubernetes client:", err)
+	if outClusterMode {
+		client, err = kube.NewOutClusterConfig()
+		if err != nil {
+			log.Fatalln("failed to create Kubernetes client:", err)
+		}
+
+	} else {
+		client, err = kube.NewInClusterConfig()
+		if err != nil {
+			log.Fatalln("failed to create Kubernetes client:", err)
+		}
 	}
 	client.PullPolicy = *defaultPullPolicy.value
 
