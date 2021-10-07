@@ -258,7 +258,7 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 
 	if simType == kube.SimulationGlobal {
 		header := http.Header{}
-		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
+		header.Set("Authorization", r.Header.Get("Authorization"))
 		tenantID := fmt.Sprintf("fleet-registry~s~%s", request.Name)
 		err = provisioning.CreateTenant(deviceManagementURL, tenantID, header)
 		if err != nil {
@@ -292,7 +292,7 @@ func removeSimulationHandler(w http.ResponseWriter, r *http.Request) {
 
 	if simType == kube.SimulationGlobal {
 		header := http.Header{}
-		header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
+		header.Set("Authorization", r.Header.Get("Authorization"))
 		tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
 		err = provisioning.DeleteTenant(deviceManagementURL, tenantID, header)
 		if err != nil {
@@ -451,7 +451,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 
 			// Provision drone to IOT Core
 			header := http.Header{}
-			header.Set("Authorization", "Bearer "+r.Header.Get("Authorization"))
+			header.Set("Authorization", r.Header.Get("Authorization"))
 			tenantID := fmt.Sprintf("fleet-registry~s~%s", simulationName)
 			settings, err := provisioning.CreateDrone(deviceManagementURL, tenantID, request.DroneID, header)
 			if err != nil {
