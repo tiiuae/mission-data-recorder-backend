@@ -166,6 +166,11 @@ func createSimulationHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	err = client.InitUpdateAgent(c, request.Name)
+	if err != nil {
+		log.Printf("Warning: Could not initialize update-agent: %v", err)
+	}
+
 	err = client.CreateGZServer(c, request.Name, imageGZServer, request.DataImage, gpuMode, cloudMode, outClusterMode)
 	if err != nil {
 		creationError = fmt.Errorf("failed to create gzserver: %w", err)
@@ -393,6 +398,7 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 		MAVLinkAddress string `json:"mavlink_address"`
 		MAVLinkUDPPort int    `json:"mavlink_udp_port"`
 		ContainerImage string `json:"container_image"`
+		OtaProfile     []byte `json:"ota_profile"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&request)
 	r.Body.Close()
@@ -516,12 +522,30 @@ func addDroneHandler(w http.ResponseWriter, r *http.Request) {
 			panic("invalid simulation type: " + simType)
 		}
 		opts.DeviceID = request.DroneID
-		err = client.CreateDrone(c, opts)
-		if err != nil {
-			if errors.Is(err, kube.ErrDroneExists) {
-				creationSucceeded = true
+
+		if len(request.OtaProfile) == 0 {
+			// Create fog-drone pod
+			err = client.CreateDrone(c, opts)
+			if err != nil {
+				if errors.Is(err, kube.ErrDroneExists) {
+					creationSucceeded = true
+				}
+				writeServerError(w, "failed to add drone", err)
+				return
 			}
-			writeServerError(w, "failed to add drone", err)
+		} else {
+			// Create update-agent pod
+			err = client.CreateDroneOta(c, opts, request.OtaProfile, imageUpdateAgent)
+			if err != nil {
+				writeServerError(w, "failed to run OTA", err)
+				return
+			}
+		}
+
+		// Wait for drone startup and service creation
+		err = waitServiceCreation(c, simulationName, fmt.Sprintf("drone-%s-svc", request.DroneID))
+		if err != nil {
+			writeServerError(w, "failed to resolve mavlink address", err)
 			return
 		}
 		request.MAVLinkAddress = fmt.Sprintf("drone-%s-svc", request.DroneID)
@@ -699,6 +723,24 @@ func waitHostPort(c context.Context, namespace, serviceName string) (string, err
 		case <-c.Done():
 			// timeout/cancel
 			return "", c.Err()
+		case <-time.After(500 * time.Millisecond):
+			// continue polling
+		}
+	}
+}
+
+func waitServiceCreation(c context.Context, namespace, serviceName string) error {
+	kube := client.Clientset
+	for {
+		_, err := kube.CoreV1().Services(namespace).Get(c, serviceName, metav1.GetOptions{})
+		if err == nil {
+			return nil
+		}
+
+		select {
+		case <-c.Done():
+			// timeout/cancel
+			return c.Err()
 		case <-time.After(500 * time.Millisecond):
 			// continue polling
 		}

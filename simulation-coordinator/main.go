@@ -30,6 +30,7 @@ var (
 	imageVideoStreamer              = "ghcr.io/tiiuae/tii-video-streamer:latest"
 	imageWebBackend                 = "ghcr.io/tiiuae/tii-web-backend:latest"
 	imageMissionDataRecorderBackend = "ghcr.io/tiiuae/tii-mission-data-recorder-backend:latest"
+	imageUpdateAgent                = "ghcr.io/tiiuae/tii-update-agent-kube:latest"
 
 	defaultPullPolicy = pullPolicyValue{
 		value: func() *v1.PullPolicy {

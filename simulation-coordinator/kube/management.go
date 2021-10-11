@@ -17,8 +17,10 @@ import (
 	"golang.org/x/oauth2/google"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	rbac "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -1434,4 +1436,183 @@ func (c *Client) CreateViewer(ctx context.Context, namespace, image, simCoordURL
 		return fmt.Errorf("Error creating gzweb service %w", err)
 	}
 	return nil
+}
+
+func (c *Client) InitUpdateAgent(ctx context.Context, namespace string) error {
+	false := false
+	serviceAccount := &v1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-agent-account",
+			Namespace: namespace,
+		},
+		AutomountServiceAccountToken: &false,
+	}
+	role := &rbac.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-agent-role",
+			Namespace: namespace,
+		},
+		Rules: []rbac.PolicyRule{{
+			APIGroups: []string{"", "apps"},
+			Resources: []string{
+				"namespaces", "deployments", "services", "pods",
+				"pods/log", "pods/exec", "secrets", "configmaps",
+			},
+			Verbs: []string{"get", "watch", "list", "create", "delete"},
+		}},
+	}
+	roleBinding := &rbac.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-agent-binding",
+			Namespace: namespace,
+		},
+		Subjects: []rbac.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "update-agent-account",
+			Namespace: namespace,
+		}},
+		RoleRef: rbac.RoleRef{
+			Kind:     "Role",
+			Name:     "update-agent-role",
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+	}
+
+	_, err := c.Clientset.RbacV1().Roles(namespace).Create(ctx, role, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	_, err = c.Clientset.RbacV1().RoleBindings(namespace).Create(ctx, roleBinding, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
+	_, err = c.Clientset.CoreV1().ServiceAccounts(namespace).Create(ctx, serviceAccount, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Client) CreateDroneOta(ctx context.Context, opts *CreateDroneOptions, otaProfileBytes []byte, imageUpdateAgent string) error {
+	true := true
+	name := fmt.Sprintf("drone-%s-%s", opts.DeviceID, parseImage(imageUpdateAgent))
+
+	files := map[string][]byte{
+		"communication_link.config":    []byte(opts.CommlinkYaml),
+		"fog_env":                      []byte(opts.FogBash),
+		"mission_data_recorder.config": []byte(opts.RecorderYaml),
+		"ota-profile.yaml":             otaProfileBytes,
+		"rsa_private.pem":              []byte(opts.PrivateKey),
+	}
+
+	data := wrapFiles(files)
+
+	droneDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"app":             name,
+				"drone-device-id": opts.DeviceID,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app":             name,
+					"drone-device-id": opts.DeviceID,
+				},
+			},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app":             name,
+						"drone-device-id": opts.DeviceID,
+					},
+				},
+				Spec: v1.PodSpec{
+					ServiceAccountName:           "update-agent-account",
+					AutomountServiceAccountToken: &true,
+					Volumes: []v1.Volume{
+						enclaveVolume(name),
+					},
+					InitContainers: []v1.Container{
+						enclaveInitializer(name, data),
+					},
+					Containers: []v1.Container{
+						{
+							Name:            name,
+							Image:           imageUpdateAgent,
+							ImagePullPolicy: c.PullPolicy,
+							Args:            []string{"-namespace=" + opts.Namespace, "-device-id=" + opts.DeviceID},
+							VolumeMounts: []v1.VolumeMount{
+								enclaveMount(name),
+							},
+						},
+					},
+					ImagePullSecrets: []v1.LocalObjectReference{{
+						Name: "dockerconfigjson",
+					}},
+				},
+			},
+		},
+	}
+
+	_, err := c.Clientset.AppsV1().Deployments(opts.Namespace).Create(ctx, droneDeployment, metav1.CreateOptions{})
+	if k8serrors.IsAlreadyExists(err) {
+		return ErrDroneExists
+	} else if err != nil {
+		return err
+	}
+
+	return err
+}
+
+func enclaveVolume(name string) v1.Volume {
+	return v1.Volume{
+		Name: name + "-vol",
+		VolumeSource: v1.VolumeSource{
+			EmptyDir: &v1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
+func enclaveInitializer(name string, data string) v1.Container {
+	return v1.Container{
+		Name:            name + "-init",
+		Image:           "alpine:3.13",
+		ImagePullPolicy: v1.PullIfNotPresent,
+		Command:         []string{"sh", "-c", data},
+		VolumeMounts: []v1.VolumeMount{
+			{
+				MountPath: "/enclave",
+				Name:      name + "-vol",
+				ReadOnly:  false,
+			},
+		},
+	}
+}
+
+func enclaveMount(name string) v1.VolumeMount {
+	return v1.VolumeMount{
+		MountPath: "/enclave",
+		Name:      name + "-vol",
+	}
+}
+
+func wrapFiles(files map[string][]byte) string {
+	cmd := ""
+	for f, b := range files {
+		cmd += fmt.Sprintf("echo \"%s\" > /enclave/%s;", string(b), f)
+	}
+	return cmd
+}
+
+// return image name without url and tag
+func parseImage(image string) string {
+	s1 := strings.Split(image, "/")
+	nameTag := s1[len(s1)-1]
+	s2 := strings.Split(nameTag, ":")
+	return s2[0]
 }
