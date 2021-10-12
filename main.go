@@ -23,7 +23,7 @@ import (
 )
 
 func generateBagName() string {
-	return strconv.FormatInt(timeNow().Unix(), 10)
+	return timeNow().UTC().Format(time.RFC3339) + ".db3"
 }
 
 type urlGenerator struct {
@@ -180,7 +180,7 @@ func localURLGeneratorHandler(host string) http.Handler {
 	})
 }
 
-var pathSegmentSanitizer = strings.NewReplacer(".", "_", "/", "_")
+var pathSegmentSanitizer = strings.NewReplacer("..", "_", "/", "_")
 
 func receiveUploadHandler(dirPath string) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
