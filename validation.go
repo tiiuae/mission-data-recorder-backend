@@ -96,23 +96,19 @@ func validateDeviceCredential(
 
 type jwtClaims struct {
 	DeviceID string `json:"deviceId"`
+	BagName  string `json:"bagName"`
 	jwt.StandardClaims
 }
 
-func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (string, error) {
-	var deviceID string
+func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (*jwtClaims, error) {
 	// Automatic validation makes unit testing harder so it is skipped and
 	// manual validation is used instead.
 	parser := jwt.Parser{SkipClaimsValidation: true}
+	var claims jwtClaims
 	token, err := parser.ParseWithClaims(
 		rawToken,
-		&jwtClaims{},
+		&claims,
 		func(t *jwt.Token) (interface{}, error) {
-			claims, ok := t.Claims.(*jwtClaims)
-			if !ok {
-				return nil, invalidTokenErr{errors.New("invalid claims")}
-			}
-			deviceID = claims.DeviceID
 			now := timeNow().Unix()
 			if !claims.VerifyAudience(gcp.GetProjectID(), true) {
 				return nil, invalidTokenErr{fmt.Errorf("invalid audience: %s", claims.Audience)}
@@ -123,7 +119,7 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (string, erro
 			if !claims.VerifyIssuedAt(now, true) {
 				return nil, invalidTokenErr{fmt.Errorf("invalid issue date: %d", claims.IssuedAt)}
 			}
-			creds, err := gcp.GetDeviceCredentials(ctx, deviceID)
+			creds, err := gcp.GetDeviceCredentials(ctx, claims.DeviceID)
 			if err != nil {
 				return nil, invalidTokenErr{err}
 			}
@@ -132,25 +128,25 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (string, erro
 				if err != nil {
 					log.Printf(
 						"a non-fatal error occurred when validating credential number %d for device '%s': %s",
-						i, deviceID, err.Error(),
+						i, claims.DeviceID, err.Error(),
 					)
 				} else if pubKey != nil {
 					return pubKey, nil
 				}
 			}
-			return nil, invalidTokenErr{errors.New("unauthorized device: " + deviceID)}
+			return nil, invalidTokenErr{errors.New("unauthorized device: " + claims.DeviceID)}
 		},
 	)
 	if !token.Valid {
-		return "", fmt.Errorf("failed to validate token: %w", err)
+		return nil, fmt.Errorf("failed to validate token: %w", err)
 	}
-	return deviceID, nil
+	return &claims, nil
 }
 
-func getDeviceIDWithoutValidation(rawToken string) (string, error) {
+func getClaimsWithoutValidation(rawToken string) (*jwtClaims, error) {
 	token, _, err := (&jwt.Parser{}).ParseUnverified(rawToken, &jwtClaims{})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return token.Claims.(*jwtClaims).DeviceID, nil
+	return token.Claims.(*jwtClaims), nil
 }

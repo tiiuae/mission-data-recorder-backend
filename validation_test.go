@@ -266,6 +266,7 @@ nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
 		}
 		token := jwt.NewWithClaims(signingMethod, &jwtClaims{
 			DeviceID: id,
+			BagName:  "testbag.db3",
 			StandardClaims: jwt.StandardClaims{
 				Audience:  gcp.projectID,
 				ExpiresAt: expires.Unix(),
@@ -281,35 +282,36 @@ nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
 	bg := context.Background()
 
 	t.Run("valid token", func(t *testing.T) {
-		deviceID, err := validateJWT(bg, gcp, newToken("existing", nil))
+		claims, err := validateJWT(bg, gcp, newToken("existing", nil))
 		assert.NoError(t, err)
-		assert.Equal(t, deviceID, "existing")
+		assert.Equal(t, claims.DeviceID, "existing")
+		assert.Equal(t, claims.BagName, "testbag.db3")
 	})
 	t.Run("invalid token", func(t *testing.T) {
 		token := []byte(newToken("existing", nil))
 		token[3] = 2
-		deviceID, err := validateJWT(bg, gcp, string(token))
+		claims, err := validateJWT(bg, gcp, string(token))
 		assert.Error(t, err)
-		assert.Equal(t, "", deviceID)
+		assert.Nil(t, claims)
 	})
 	t.Run("nonexistent device", func(t *testing.T) {
-		deviceID, err := validateJWT(bg, gcp, newToken("nonexistent", nil))
+		claims, err := validateJWT(bg, gcp, newToken("nonexistent", nil))
 		assert.Error(t, err)
-		assert.Equal(t, "", deviceID)
+		assert.Nil(t, claims)
 	})
 	t.Run("expired token", func(t *testing.T) {
 		expires := timeNow().Add(-time.Second)
-		deviceID, err := validateJWT(bg, gcp, newToken("existing", &expires))
+		claims, err := validateJWT(bg, gcp, newToken("existing", &expires))
 		if assert.Error(t, err) {
 			assert.Contains(t, err.Error(), "expired")
 		}
-		assert.Equal(t, "", deviceID)
+		assert.Nil(t, claims)
 	})
 	t.Run("no valid key", func(t *testing.T) {
-		deviceID, err := validateJWT(bg, gcp, newToken("another existing", nil))
+		claims, err := validateJWT(bg, gcp, newToken("another existing", nil))
 		if assert.Error(t, err) {
 			assert.Contains(t, err.Error(), "unauthorized device")
 		}
-		assert.Equal(t, "", deviceID)
+		assert.Nil(t, claims)
 	})
 }

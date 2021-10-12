@@ -22,6 +22,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func generateBagName() string {
+	return strconv.FormatInt(timeNow().Unix(), 10)
+}
+
 type urlGenerator struct {
 	Bucket        string
 	Account       string
@@ -30,8 +34,11 @@ type urlGenerator struct {
 	Prefix        string
 }
 
-func (g *urlGenerator) Generate(deviceID, method string) (string, error) {
-	name := fmt.Sprintf("%s%s/%d", g.Prefix, deviceID, timeNow().Unix())
+func (g *urlGenerator) Generate(deviceID, name, method string) (string, error) {
+	if name == "" {
+		name = generateBagName()
+	}
+	name = g.Prefix + deviceID + "/" + name
 	url, err := storage.SignedURL(g.Bucket, name, &storage.SignedURLOptions{
 		GoogleAccessID: g.Account,
 		PrivateKey:     g.SigningKey,
@@ -126,20 +133,20 @@ func signedURLGeneratorHandler(gen *urlGenerator, gcp gcpAPI, disableValidation 
 			return
 		}
 		var (
-			deviceID string
-			err      error
+			claims *jwtClaims
+			err    error
 		)
 		if disableValidation {
-			deviceID, err = getDeviceIDWithoutValidation(rawToken)
+			claims, err = getClaimsWithoutValidation(rawToken)
 		} else {
-			deviceID, err = validateJWT(r.Context(), gcp, rawToken)
+			claims, err = validateJWT(r.Context(), gcp, rawToken)
 		}
 		if err != nil {
 			log.Println(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
-		signedURL, err := gen.Generate(deviceID, "PUT")
+		signedURL, err := gen.Generate(claims.DeviceID, claims.BagName, "PUT")
 		if err != nil {
 			log.Println(err)
 			internalServerErr(rw)
@@ -156,17 +163,24 @@ func localURLGeneratorHandler(host string) http.Handler {
 			writeErrMsg(rw, http.StatusUnauthorized, "missing or invalid authorization header")
 			return
 		}
-		deviceID, err := getDeviceIDWithoutValidation(rawToken)
+		claims, err := getClaimsWithoutValidation(rawToken)
 		if err != nil {
 			log.Println(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
 		writeJSON(rw, jsonObj{
-			"url": fmt.Sprintf("%s/upload?device=%s", host, url.QueryEscape(deviceID)),
+			"url": fmt.Sprintf(
+				"%s/upload?device=%s&bagName=%s",
+				host,
+				url.QueryEscape(claims.DeviceID),
+				url.QueryEscape(claims.BagName),
+			),
 		})
 	})
 }
+
+var pathSegmentSanitizer = strings.NewReplacer(".", "_", "/", "_")
 
 func receiveUploadHandler(dirPath string) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -175,13 +189,17 @@ func receiveUploadHandler(dirPath string) http.Handler {
 			writeErrMsg(rw, http.StatusBadRequest, "parameter 'device' is missing")
 			return
 		}
-		dir := filepath.Join(dirPath, strings.ReplaceAll(device, ".", "_"))
+		dir := filepath.Join(dirPath, pathSegmentSanitizer.Replace(device))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Println(err)
 			internalServerErr(rw)
 			return
 		}
-		f, err := os.Create(filepath.Join(dir, strconv.FormatInt(timeNow().Unix(), 10)))
+		bagName := pathSegmentSanitizer.Replace(r.URL.Query().Get("bagName"))
+		if bagName == "" {
+			bagName = generateBagName()
+		}
+		f, err := os.Create(filepath.Join(dir, bagName))
 		if err != nil {
 			log.Println(err)
 			internalServerErr(rw)
