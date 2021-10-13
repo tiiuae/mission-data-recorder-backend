@@ -1,8 +1,0 @@
-*.yaml
-*.p12
-*.pem
-*.out
-Dockerfile*
-.dockerignore
-.gitignore
-*.txt
