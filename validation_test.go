@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
-	"os"
 	"testing"
 	"time"
 
@@ -12,18 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/api/cloudiot/v1"
 )
-
-func TestMain(m *testing.M) {
-	timeNow = func() time.Time {
-		t, err := time.Parse("2006-01-02 15:04", "2021-03-26 11:26")
-		if err != nil {
-			panic(err)
-		}
-		return t
-	}
-	log.SetOutput(os.Stdout)
-	os.Exit(m.Run())
-}
 
 func TestValidateCredential(t *testing.T) {
 	testCases := []struct {
@@ -186,8 +172,10 @@ nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
 }
 
 type gcpConfigTest struct {
-	projectID   string
-	credentials map[string][]*cloudiot.DeviceCredential
+	projectID     string
+	rawPrivateKey []byte
+	privateKey    interface{}
+	credentials   map[string][]*cloudiot.DeviceCredential
 }
 
 func (c *gcpConfigTest) GetProjectID() string {
@@ -202,6 +190,42 @@ func (c *gcpConfigTest) GetDeviceCredentials(ctx context.Context, deviceID strin
 	return nil, errors.New("unknown device: " + deviceID)
 }
 
+func (c *gcpConfigTest) newTestToken(id, name string, expires *time.Time) string {
+	signingMethod := jwt.GetSigningMethod("RS256")
+	if expires == nil {
+		t := timeNow().Add(time.Second)
+		expires = &t
+	}
+	type noBagNameClaims struct {
+		jwt.StandardClaims
+		DeviceID string
+	}
+	standardClaims := jwt.StandardClaims{
+		Audience:  c.projectID,
+		ExpiresAt: expires.Unix(),
+		IssuedAt:  timeNow().Add(-time.Minute).Unix(),
+	}
+	var claims jwt.Claims
+	if name == "" {
+		claims = &noBagNameClaims{
+			DeviceID:       id,
+			StandardClaims: standardClaims,
+		}
+	} else {
+		claims = &jwtClaims{
+			DeviceID:       id,
+			BagName:        name,
+			StandardClaims: standardClaims,
+		}
+	}
+	token := jwt.NewWithClaims(signingMethod, claims)
+	s, err := token.SignedString(c.privateKey)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
 func panicOnErr(x interface{}, err error) interface{} {
 	if err != nil {
 		panic(err)
@@ -209,40 +233,84 @@ func panicOnErr(x interface{}, err error) interface{} {
 	return x
 }
 
-func TestValidateJWT(t *testing.T) {
+func testGCP() *gcpConfigTest {
 	publicKey := `-----BEGIN CERTIFICATE-----
-MIIBEDCBuAIJANWAlyQ8yP7RMAoGCCqGSM49BAMCMBExDzANBgNVBAMMBnVudXNl
-ZDAeFw0yMTAzMzAxNDAyNThaFw0yMTA0MjkxNDAyNThaMBExDzANBgNVBAMMBnVu
-dXNlZDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNxuJPsAwun7FeKsGHndHxUP
-1vKyB9SQMEgC1EYAg7UoPL0y3uVgNnlQa6ktFgOrOR4MUl8gOxkc8DiGq1eNousw
-CgYIKoZIzj0EAwIDRwAwRAIgUlf1AwPjxK2d5WuzN/0WguYYmcOd8bCesUazCbxo
-MDkCIHjGq+T9KwYqkeP/kKyu2cD0gTvvmB1xdzRXuyje1Q6/
+MIIDBTCCAe2gAwIBAgIUZabeiF2YUMpyWg93MA9PBT3mioIwDQYJKoZIhvcNAQEL
+BQAwETEPMA0GA1UEAwwGdW51c2VkMCAXDTIxMTAxNDA4MzcyNVoYDzIyOTUwNzI5
+MDgzNzI1WjARMQ8wDQYDVQQDDAZ1bnVzZWQwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+DwAwggEKAoIBAQCS5hnI/4Z9RLZNjnCmDGmrl6KXAWwD9X1q29rGqHsp34xnb7pY
+4bl3yb1TxrTJTA4WHe8fxmcZDRMZpEbs9fTz3KnraXICo1jLD1eal9myII7RFow7
+8Cn4hCpAYNp0Kt0WaM7GDjYw33hoZHLTWFMKoZ5D5AXMLarG8o3gHdMP7GM8LZ8D
+QzWaTl9MkM/oIpoCP0TtqAiIF+r2IbLT1/3x6rG/9CWGD8rpifkxAaLjSaMl50Fi
+R+R0EbS70qTshda6VwrJgZ72SZG23xTuroFh9RNmy2NJG0BXHG9GNHet1hiOZ66E
+GfAJIlV8EPmQQF2SmXItALZ2+FK9RDcqw9dRAgMBAAGjUzBRMB0GA1UdDgQWBBRo
+DlEkUkBrYeo1oV98hwFAlcdfxTAfBgNVHSMEGDAWgBRoDlEkUkBrYeo1oV98hwFA
+lcdfxTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQATrLJv6WgS
+Vs53zBhH6k/wiYwqbN9lUT49jATFtSkUQveyaWjmWgBN8K/2iKk7D4d9/tbEHkOl
+CTpeqTSKIIWw/dYCAqs+rM4VkpLGMXlATCM6/P7Z5cDZZEaGvFbl/fRRNDHdBes5
+kHIdda+8GwcBJqh1Ujh8sEDBGmcMXFzmN32WL0QyM53uZ+sQZEEOKK9jY/XQYDIT
+kLrYyqf+iMsfW6Je/VKHTtUjjdf0uuHP6zd42y5S2QQ+lYehwyIOV10G5JcuTnA/
+UOO/jUR+5ZYC2nwfDx6Zn1I5IG3QFNuKuKnQC9t3z1SYqsTQEDGDOmD8tDI8YWG6
+H0tMDJXfOZAo
 -----END CERTIFICATE-----`
-	privateKey := panicOnErr(
-		jwt.ParseECPrivateKeyFromPEM(
-			[]byte(`-----BEGIN EC PRIVATE KEY-----
-MHcCAQEEIPi+9y73Z1Vf44vkeW8jSSyts7F48z8iWaFJjSBKnblmoAoGCCqGSM49
-AwEHoUQDQgAE3G4k+wDC6fsV4qwYed0fFQ/W8rIH1JAwSALURgCDtSg8vTLe5WA2
-eVBrqS0WA6s5HgxSXyA7GRzwOIarV42i6w==
------END EC PRIVATE KEY-----`),
-		),
-	)
+	rawPrivateKey := []byte(`-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCS5hnI/4Z9RLZN
+jnCmDGmrl6KXAWwD9X1q29rGqHsp34xnb7pY4bl3yb1TxrTJTA4WHe8fxmcZDRMZ
+pEbs9fTz3KnraXICo1jLD1eal9myII7RFow78Cn4hCpAYNp0Kt0WaM7GDjYw33ho
+ZHLTWFMKoZ5D5AXMLarG8o3gHdMP7GM8LZ8DQzWaTl9MkM/oIpoCP0TtqAiIF+r2
+IbLT1/3x6rG/9CWGD8rpifkxAaLjSaMl50FiR+R0EbS70qTshda6VwrJgZ72SZG2
+3xTuroFh9RNmy2NJG0BXHG9GNHet1hiOZ66EGfAJIlV8EPmQQF2SmXItALZ2+FK9
+RDcqw9dRAgMBAAECggEBAI0L3so9fxaceSZyk/r7hCK8D+NJ/Dq45dlKi/+fGdMU
+0C0o/BYHdhtsWxsreb6mBgh6aXVq/ObyxNoj/+3aI35a69QbhNq/mKwwaP8Iun/r
+/vUH31JVwRbbX+48kMRlu66ep5tHXgUDLQufFxmSfvmAQQQS1vY7CvTHRC5itJtd
++2sJ2I1bWMfbEGegnmZirUBcl1ECs7Lwlik3iGUwf7myRjeh31q4ENAa7upaUu/X
+JjPLGPNGiCHLTnV7wZuGxEqqA1rHjCjc0tdy1ToMjL/tnI9oPCvgKSvPw4rwM/8l
++Uss6PJIFm198I1w796fRqrNIDWkG/Q8ZzUbBx5AcyECgYEAwtsHAOiwWneCdXwb
+RFPqSifioNmWrDc8ksM66bgWSv+fXLMI5Bd4ijzB0AePJnROba7A/epgkKNNQRlu
+WzSQLPLueZ8pLhVV3fG4jxA+Ncxr/opazGy9zWTl7cq8R9x5gg14qia1KQFfup+X
+PgwmWRMDZcBTXwq7JbM0NGo+M1UCgYEAwP6nIsw6MQlg7MXvOA2lNGmOuP/CSWyc
+AVV7qVURGYwl67cWEv6NknJMJcnDu3mKy1IGeJcgKd7MDNmv0ruUMCwpeeqEzkCC
++tNPM/BAHZQDMVW4SDZpKU+AsHOikPRZUsdOR3hcseruUHJq84FfCNv4IWOnA05L
+h/Ns/HDmTA0CgYB2MbeA1KRMa9ulef9sJd6i1qjAWtvrYKIMgAHXTUOwgHfhGfRV
+rur+JzaFAmDRuZDtNSh5nNawRW4SA+QNzMd7jGwdN+8ZtfVc6EfD991Ucsg7IR9M
+itVipkZWRDiK+nB188fypgITenLf1/g8uc/1DfRsnwmzR+YXSylqddt+9QKBgFK3
+knkGoVZNF77DoyEaMBmDuIkwDVyc8UxdEBBmhlq1x7b8lLh1Y8ZFuL9ld7/NeyBj
+uqRK2Z04gapsTsB6ZywycWBwlJU17y2EDelL6p8Cxk+J1t8UewQasCRwm1eXcwVY
+qQNW4hvbfmL6dz6Az3Ojm/jrljSDhTnyql6UIRCtAoGAUwz/p7J8JuUOXwZkT/et
+CaYc8irByLwCEbGoS9nVV39yIGN1B3QBoYEwi1VUINUrYrgkzF/hKTpy0nQQFlrj
+qq7inE+nwW89vs+xubAAvj3r8Koyeo2V+/SpxV2Q1TT5+4DNKiz0V57UCHrs48MP
+V7S+vfEn4CMXg+cjBAUVbuw=
+-----END PRIVATE KEY-----`)
+	privateKey := panicOnErr(jwt.ParseRSAPrivateKeyFromPEM(rawPrivateKey))
 	publicKeyWithoutPrivateKey := `-----BEGIN CERTIFICATE-----
-MIIBETCBuAIJAKdL4R/jQjJzMAoGCCqGSM49BAMCMBExDzANBgNVBAMMBnVudXNl
-ZDAeFw0yMTAzMjYwODA1MjhaFw0yMTA0MjUwODA1MjhaMBExDzANBgNVBAMMBnVu
-dXNlZDBZMBMGByqGSM49AgEGCCq9AwEHA0IABCfIe3oJBIO692y2fg13dMPo
-AkUpiVqDNuHsJvLoapJ7hAUmjG9C9lM4Wp6yF/6nHCaEmSBOkD/6Zde0AUB2zG4w
-CgYIKoZIzj0EAwIDSAAwRQIgQKJvL+i+23DrZqussgSc1XxEwfKCtt0tnhdtk2X0
-nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
+MIIDBTCCAe2gAwIBAgIURewcgV5ZVft0qvsHijFomvB8a18wDQYJKoZIhvcNAQEL
+BQAwETEPMA0GA1UEAwwGdW51c2VkMCAXDTIxMTAxNDA4NDAyOFoYDzIyOTUwNzI5
+MDg0MDI4WjARMQ8wDQYDVQQDDAZ1bnVzZWQwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+DwAwggEKAoIBAQChe3JJILj9jtB+w2LlwVeiU2K2voqIMeL1ycsQEDHuXlWgtv8Q
+pMgj/tVO8Rr8mNJTYZts6fyqKQ9ctzuyhXePrKoJLJiEggT5YPlLj0NF6dLAw5lX
+HIwtmq6kn7zoYzoqHjJyx+qTYP6mQpbTIMGbmKJtFfHJ+r/uC5RqC2f0r5RdVRZH
+Aw/3hUcws02+3fSJNQ9A/xXp4DIV6kVZgNBY5wjwGTi+cGktjI70H0E9f2XeArAi
+/4QE3JZ3lt5eK4bET2nmvKAorqDmdWkhoxC0sxNQHUWMj2HarbDglmm6MC7bqTgi
+89yP5TZEZw4VwjtvNU+i61k1iE/B9r208iNTAgMBAAGjUzBRMB0GA1UdDgQWBBSP
+c8nOxS+37+ZMFf7oT7zuuC4RbDAfBgNVHSMEGDAWgBSPc8nOxS+37+ZMFf7oT7zu
+uC4RbDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQAdjqaSub/z
+VGBAPxBga5epSUAj1UCDQJd7ssOgHsdZ+51cR/IHYxSB3qK3IgzR+vAOV2qyunB5
+nwuWpVEpfm3klTVN37LK3XBUah/V+3WRwAQuTEoTGuXJ0waUWClMKIXJEe0bxZli
+0OI3NI7v0TLihE8qdIQSgxY7iYNmHgnA7ulSnziZr+D5Esd+dCTPk0/2SFt38vjo
+Vm6CKlHluu8TWy3xy7ppT9dhEAyQ3KQzr2hBrvoInX9By1ym98iZOG/TBfGu9s9M
+oPCV0e7ZhaMkq7vmQC+R4Cry0LLhL2y5Erx8r/MqCy09tONbc6FFzO535tCjF++k
+v1aXtd+Hg5fu=
 -----END CERTIFICATE-----`
-	gcp := &gcpConfigTest{
-		projectID: "test-project",
+	return &gcpConfigTest{
+		projectID:     "test-project",
+		privateKey:    privateKey,
+		rawPrivateKey: rawPrivateKey,
 		credentials: map[string][]*cloudiot.DeviceCredential{
 			"existing": {
 				{
 					ExpirationTime: time.Unix(0, 0).Format(time.RFC3339),
 					PublicKey: &cloudiot.PublicKeyCredential{
-						Format: "ES256_X509_PEM",
+						Format: "RSA_X509_PEM",
 						Key:    publicKey,
 					},
 				},
@@ -251,33 +319,19 @@ nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
 				{
 					ExpirationTime: time.Unix(0, 0).Format(time.RFC3339),
 					PublicKey: &cloudiot.PublicKeyCredential{
-						Format: "ES256_X509_PEM",
+						Format: "RSA_X509_PEM",
 						Key:    publicKeyWithoutPrivateKey,
 					},
 				},
 			},
 		},
 	}
-	signingMethod := jwt.GetSigningMethod("ES256")
+}
+
+func TestValidateJWT(t *testing.T) {
+	gcp := testGCP()
 	newToken := func(id string, expires *time.Time) string {
-		if expires == nil {
-			t := timeNow().Add(time.Second)
-			expires = &t
-		}
-		token := jwt.NewWithClaims(signingMethod, &jwtClaims{
-			DeviceID: id,
-			BagName:  "testbag.db3",
-			StandardClaims: jwt.StandardClaims{
-				Audience:  gcp.projectID,
-				ExpiresAt: expires.Unix(),
-				IssuedAt:  timeNow().Add(-time.Minute).Unix(),
-			},
-		})
-		s, err := token.SignedString(privateKey)
-		if err != nil {
-			panic(err)
-		}
-		return s
+		return gcp.newTestToken(id, "testbag.db3", expires)
 	}
 	bg := context.Background()
 
@@ -313,5 +367,11 @@ nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
 			assert.Contains(t, err.Error(), "unauthorized device")
 		}
 		assert.Nil(t, claims)
+	})
+	t.Run("empty bag name", func(t *testing.T) {
+		claims, err := validateJWT(bg, gcp, gcp.newTestToken("existing", "", nil))
+		assert.Nil(t, err)
+		assert.Equal(t, claims.DeviceID, "existing")
+		assert.Equal(t, claims.BagName, "")
 	})
 }
