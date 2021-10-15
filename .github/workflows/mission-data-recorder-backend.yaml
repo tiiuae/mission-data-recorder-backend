@@ -42,8 +42,8 @@ jobs:
         uses: docker/login-action@v1
         with:
           registry: ghcr.io
-          username: ${{ secrets.PACKAGES_USER }}
-          password: ${{ secrets.PACKAGES_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build tii-mission-data-recorder-backend image and push
         uses: docker/build-push-action@v2
