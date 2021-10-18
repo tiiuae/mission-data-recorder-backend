@@ -21,7 +21,7 @@ jobs:
 
       - name: Run tests
         run: go test ./...
-        working-directory: ./mission-data-recorder-backend/
+        working-directory: ./
 
       - uses: docker/setup-buildx-action@v1
 
