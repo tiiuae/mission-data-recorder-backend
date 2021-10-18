@@ -3,8 +3,6 @@ name: mission-data-recorder-backend
 on:
   push:
     branches: main
-    paths:
-      - mission-data-recorder-backend/**
     tags: 
       - v[0-9]+.[0-9]+.[0-9]+
       - v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+
@@ -48,7 +46,7 @@ jobs:
       - name: Build tii-mission-data-recorder-backend image and push
         uses: docker/build-push-action@v2
         with:
-          context: ./mission-data-recorder-backend/
-          file: ./mission-data-recorder-backend/Dockerfile
+          context: .
+          file: ./Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
