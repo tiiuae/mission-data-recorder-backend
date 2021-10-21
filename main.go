@@ -22,8 +22,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
 func generateBagName() string {
-	return timeNow().UTC().Format(time.RFC3339) + ".db3"
+	return timeNow().UTC().Format(timeFormat) + ".db3"
 }
 
 type urlGenerator struct {

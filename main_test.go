@@ -55,7 +55,7 @@ func TestSignedURLGeneratorHandler(t *testing.T) {
 		resp := httptest.NewRecorder()
 		handler.ServeHTTP(resp, req)
 		require.Equal(t,
-			"{\"url\":\"https://storage.googleapis.com/testbucket/existing/2021-03-26T11:26:00Z.db3?Expires=1616758260\\u0026GoogleAccessId=testaccount\\u0026Signature=h0HH7Mc%2BARqpivFQE1a38eagKN8rnI%2FjeE4gnvif3LDXbkVu7JKRwfE3wYeQGtxxG%2BLm3prg%2FYjPgyNAi9S2mFHywDHec1M2%2BSnGy4EO4bigXazx5AiQ5mj1BSL%2B7%2BexjTlTL75MLZeBf0pK1eIfTm5nOQstpQpmuigcURVQc0twiQLjaKVm3KUHRzO6eJdhcaA0FMvala0w%2FZZLEHSwHTI3Tjk%2FdHjNBGOF%2FIVDvD42qnwx6blTwfxebq4lLQN1rNAotd6P5qHPmyNK3bYj9tQt2txzPdtF5lSsVIIKJmSbPj5vOaqNGLbw4mbjf4roQAcs%2FmU44xGMj5%2BV32SNNg%3D%3D\"}\n",
+			"{\"url\":\"https://storage.googleapis.com/testbucket/existing/2021-03-26T11:26:00.000000000Z.db3?Expires=1616758260\\u0026GoogleAccessId=testaccount\\u0026Signature=SL8Pud8uXqI3sxz89eGEh6v2oBalLhHeDq3DTr7N2nEQYug5y8ZqY0kte7djpk3MuomKdBFm6nmCPSFT0kvZg%2FntcOU3%2BnptUH1lpvh4w237N6qck83E%2B%2FTIelB8FL5tbFj4sHm2ITDE9NFnQ55vf7PZ4HUMwVFXsEyK0L6Jw3bxsPKovCg65O6ywL40fJ5KEeebFXceH0wZcTXSlu16XFvAe0foNJemNAqiDuh2ZFupfNYuwGwq0AKEh2DLX%2B3EHdFWqiGqD7YfWq029nq7yiKB1YXYVzRFq7bbTk6wzhm%2FAKX9eeResvAQ59wfRIsFAXcWlF8nBXSqlBM7%2Bi84LA%3D%3D\"}\n",
 			resp.Body.String(),
 		)
 	})
