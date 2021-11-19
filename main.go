@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,10 +16,11 @@ import (
 
 	"cloud.google.com/go/storage"
 	"github.com/gorilla/mux"
+	"github.com/spf13/pflag"
+	"github.com/tiiuae/fleet-management/mission-data-recorder-backend/configloader"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudiot/v1"
 	"google.golang.org/api/option"
-	"gopkg.in/yaml.v3"
 )
 
 const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
@@ -58,46 +59,50 @@ func configErr(err error) error {
 }
 
 type configuration struct {
-	Bucket            string        `yaml:"bucket"`
-	Account           string        `yaml:"account"`
-	PrivateKeyFile    string        `yaml:"privateKeyFile"`
-	PrivateKey        []byte        `yaml:"-"`
-	JSONCredentials   []byte        `yaml:"-"`
-	URLValidDuration  time.Duration `yaml:"urlValidDuration"`
-	Port              int           `yaml:"port"`
-	GCP               gcpConfig     `yaml:"gcp"`
-	LocalDir          string        `yaml:"fileStorageDirectory"`
-	Host              string        `yaml:"host"`
-	DataObjectPrefix  string        `yaml:"dataObjectPrefix"`
-	DisableValidation bool          `yaml:"disableValidation"`
+	Bucket            string        `config:"bucket"`
+	Account           string        `config:"account"`
+	PrivateKeyFile    string        `config:"privateKeyFile"`
+	URLValidDuration  time.Duration `config:"urlValidDuration"`
+	Port              int           `config:"port"`
+	GCP               gcpConfig     `config:"gcp"`
+	LocalDir          string        `config:"fileStorageDirectory"`
+	Host              string        `config:"host"`
+	DataObjectPrefix  string        `config:"dataObjectPrefix"`
+	DisableValidation bool          `config:"disableValidation"`
+
+	privateKey      []byte
+	jsonCredentials []byte
 }
 
-var config configuration
-
-func loadConfig(configPath string) error {
-	f, err := os.Open(configPath)
-	if err != nil {
-		return configErr(err)
-	}
-	defer f.Close()
-	if err := yaml.NewDecoder(f).Decode(&config); err != nil {
-		return configErr(err)
+func loadConfig() (config *configuration, err error) {
+	config = &configuration{}
+	loader := configloader.New()
+	loader.Args = os.Args
+	loader.EnvPrefix = "MISSION_DATA_RECORDER_BACKEND"
+	if err := loader.Load(config); err != nil {
+		var f configloader.FatalErr
+		if errors.As(err, &f) {
+			return nil, err
+		} else if errors.Is(err, pflag.ErrHelp) {
+			return nil, nil
+		}
+		log.Println("during config loading:", err)
 	}
 	if config.LocalDir == "" {
-		config.JSONCredentials, err = os.ReadFile(config.PrivateKeyFile)
+		config.jsonCredentials, err = os.ReadFile(config.PrivateKeyFile)
 		if err != nil {
-			return configErr(err)
+			return nil, configErr(err)
 		}
-		keyConfig, err := google.JWTConfigFromJSON(config.JSONCredentials)
+		keyConfig, err := google.JWTConfigFromJSON(config.jsonCredentials)
 		if err != nil {
-			return configErr(err)
+			return nil, configErr(err)
 		}
-		config.PrivateKey = keyConfig.PrivateKey
+		config.privateKey = keyConfig.PrivateKey
 	}
 	if config.Host == "" {
 		config.Host = "http://localhost:" + strconv.Itoa(config.Port)
 	}
-	return nil
+	return config, nil
 }
 
 func urlGeneratorFromConfig(config *configuration) *urlGenerator {
@@ -222,14 +227,7 @@ func healthCheck(rw http.ResponseWriter, r *http.Request) {
 }
 
 func run() int {
-	configPath := flag.String("config", "", "(required) config file path")
-	flag.Parse()
-	if *configPath == "" {
-		log.Println("usage:", os.Args[0], "[flags]")
-		flag.PrintDefaults()
-		return 1
-	}
-	err := loadConfig(*configPath)
+	config, err := loadConfig()
 	if err != nil {
 		log.Println(err)
 		return 1
@@ -246,14 +244,14 @@ func run() int {
 	if config.LocalDir == "" {
 		config.GCP.iotService, err = cloudiot.NewService(
 			context.Background(),
-			option.WithCredentialsJSON(config.JSONCredentials),
+			option.WithCredentialsJSON(config.jsonCredentials),
 		)
 		if err != nil {
 			log.Println(err)
 			return 1
 		}
 		urlGenHandler = signedURLGeneratorHandler(
-			urlGeneratorFromConfig(&config),
+			urlGeneratorFromConfig(config),
 			&config.GCP,
 			config.DisableValidation,
 		)
