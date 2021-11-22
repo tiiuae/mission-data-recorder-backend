@@ -2,10 +2,10 @@ name: mission-data-recorder-backend
 
 on:
   push:
-    branches: main
-    tags: 
-      - v[0-9]+.[0-9]+.[0-9]+
-      - v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+
+    branches:
+      - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      
+
       - name: Setup Go environment
         uses: actions/setup-go@v2.1.3
         with:
@@ -36,6 +36,7 @@ jobs:
             type=semver,pattern={{version}}
             type=sha
             latest
+            type=raw,value={{branch}}-{{sha}}-{{date 'x'}}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v1
