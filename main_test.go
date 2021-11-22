@@ -30,32 +30,34 @@ func TestMain(m *testing.M) {
 
 func TestSignedURLGeneratorHandler(t *testing.T) {
 	gcp := testGCP()
-	gen := &urlGenerator{
-		Bucket:        "testbucket",
-		Account:       "testaccount",
-		SigningKey:    gcp.rawPrivateKey,
-		ValidDuration: 5 * time.Minute,
+	config := &configuration{
+		Bucket:            "testbucket",
+		Account:           "testaccount",
+		privateKey:        gcp.rawPrivateKey,
+		URLValidDuration:  5 * time.Minute,
+		Debug:             true,
+		DisableValidation: true,
 	}
-	handler := signedURLGeneratorHandler(gen, gcp, true)
+	handler := signedURLGeneratorHandler(config, gcp)
 	t.Run("bag name included", func(t *testing.T) {
-		token := gcp.newTestToken("existing", "test-bag.db3.gz", nil)
+		token := gcp.newTestToken("existing", "", "test-bag.db3.gz", nil)
 		req := httptest.NewRequest("POST", "/generate-url", nil)
 		req.Header.Add("Authorization", "Bearer "+token)
 		resp := httptest.NewRecorder()
 		handler.ServeHTTP(resp, req)
 		require.Equal(t,
-			"{\"url\":\"https://storage.googleapis.com/testbucket/existing/test-bag.db3.gz?Expires=1616758260\\u0026GoogleAccessId=testaccount\\u0026Signature=LbwByUcGK2b%2FbCl6nqjgTLnnHEznXz%2Fcs%2B%2FNo5KE4Epi7%2BMvA%2FfVgtKCk4jQyIekiqroAUHFNHp6uh0z4Ft%2F5TY95%2BKHFsPB%2FmiOrBtyjdfP3cdmV3Z2IgoftEvk0ESY9u3GQQJi8BTnHVgF%2B8yJLyo9%2B9WYGH6nHvVNvOHf6129mV7J5o2EhB%2F%2BPo5JNHI4hreQzXbR8%2Br1a9mbJYjNhY%2FI5gzTtjARfO4hEus5y6I8k6AtQuNjyV7mx4LsXh0XGSSSlfwsOioiY%2FOnWahMBxViZWInnnni%2FUJVT1QuNATllSNd6eIMajVFv2noFbGhiyq8Nmo45NlxDD1gvyRV0w%3D%3D\"}\n",
+			"{\"url\":\"https://storage.googleapis.com/testbucket/test-tenant/existing/test-bag.db3.gz?Expires=1616758260\\u0026GoogleAccessId=testaccount\\u0026Signature=XlFzKCa8PMtJfqDuuEw0R5hB7uJ0pz%2BmG%2Buqf8B5pkGNGcULMeZzj%2Fbm7K%2B%2Bnt5G03cvtoMfLtERAAI%2BPFQh3ohzqpjjiqJxEnpCvLjgg1IetqwkOJMVz7%2FTCnl5%2Fah4En2UkCMAXAU4XWTxaqZqFp7H8iZCT0ize4NWVB2zIW8bChF3hXl6sIO8WALeG%2FMKKrnPd1ieVqJKq6EkCZKpF7A3QoSHlabGnIfqvyYXM1fuFo3aKjK8AA7Nmxe3bmHt0F4xE5b09DPJ1BGRqVs1b71mrq0FbZmAEeNUIqCyxee2bz%2FBCUZ%2F5dWT8Zhuhfdeh4Iaje%2FIjZ%2BdIzTC085KPQ%3D%3D\"}\n",
 			resp.Body.String(),
 		)
 	})
 	t.Run("bag name not included", func(t *testing.T) {
-		token := gcp.newTestToken("existing", "", nil)
+		token := gcp.newTestToken("existing", "", "", nil)
 		req := httptest.NewRequest("POST", "/generate-url", nil)
 		req.Header.Add("Authorization", "Bearer "+token)
 		resp := httptest.NewRecorder()
 		handler.ServeHTTP(resp, req)
 		require.Equal(t,
-			"{\"url\":\"https://storage.googleapis.com/testbucket/existing/2021-03-26T11:26:00.000000000Z.db3?Expires=1616758260\\u0026GoogleAccessId=testaccount\\u0026Signature=SL8Pud8uXqI3sxz89eGEh6v2oBalLhHeDq3DTr7N2nEQYug5y8ZqY0kte7djpk3MuomKdBFm6nmCPSFT0kvZg%2FntcOU3%2BnptUH1lpvh4w237N6qck83E%2B%2FTIelB8FL5tbFj4sHm2ITDE9NFnQ55vf7PZ4HUMwVFXsEyK0L6Jw3bxsPKovCg65O6ywL40fJ5KEeebFXceH0wZcTXSlu16XFvAe0foNJemNAqiDuh2ZFupfNYuwGwq0AKEh2DLX%2B3EHdFWqiGqD7YfWq029nq7yiKB1YXYVzRFq7bbTk6wzhm%2FAKX9eeResvAQ59wfRIsFAXcWlF8nBXSqlBM7%2Bi84LA%3D%3D\"}\n",
+			"{\"url\":\"https://storage.googleapis.com/testbucket/test-tenant/existing/2021-03-26T11:26:00.000000000Z.db3?Expires=1616758260\\u0026GoogleAccessId=testaccount\\u0026Signature=F6n36cLTodQId09QmVTK%2FFjCUBh6WdvFfp8SN35tRj43g5UW0qBGTVnP6bF66KKpwS9mYLv9WN8pm%2Bk%2FLfsxj1w4l%2BKTWnMySkwzonwT9YaAQ79DpXCIv6CPYAaSRkx4H%2ByIjl%2FUHvsgS%2BgzeHNdsDLK3WrNP%2Fn2sFN9inVVDERqpjA0eL04nJo7G%2BUy%2B%2BzLzZvZu4KSqKcwalVBL6U75ShT%2BFxNVqppr4KSMCjfAFds9gzvu%2BOrI8xCgXI6frQYUVvUmsDRO1hyoXrBbU%2Bl9Dad0jkBxl8QTEsvDTTmq8yoGf3WyIEq%2BbPPuoiXVat2UTIXs5hrxYCzc7yKnN6JuA%3D%3D\"}\n",
 			resp.Body.String(),
 		)
 	})
@@ -69,16 +71,16 @@ func TestLocalUploading(t *testing.T) {
 	server := httptest.NewServer(r)
 	defer server.Close()
 	r.Path("/generate-url").Methods("POST").Handler(localURLGeneratorHandler(server.URL))
-	r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(dir))
+	r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(dir, "fleet-registry"))
 
-	validateFile := func(t *testing.T, device, bagName, data string) {
-		fileData, err := os.ReadFile(filepath.Join(dir, device, bagName))
+	validateFile := func(t *testing.T, tenant, device, bagName, data string) {
+		fileData, err := os.ReadFile(filepath.Join(dir, tenant, device, bagName))
 		require.Nil(t, err)
 		require.Equal(t, data, string(fileData))
 	}
 
 	uploadFile := func(t *testing.T, device, bagName, data string) {
-		token := gcp.newTestToken(device, bagName, nil)
+		token := gcp.newTestToken(device, "test-tenant", bagName, nil)
 		req, err := http.NewRequest("POST", server.URL+"/generate-url", nil)
 		require.Nil(t, err)
 		req.Header.Add("Authorization", "Bearer "+token)
@@ -95,24 +97,26 @@ func TestLocalUploading(t *testing.T) {
 		req2, err := http.NewRequest("PUT", url.URL, bagData)
 		t.Log(err)
 		require.Nil(t, err)
+		t.Log(url.URL)
 		resp2, err := http.DefaultClient.Do(req2)
 		require.Nil(t, err)
 		defer resp2.Body.Close()
-		require.Equal(t, resp2.StatusCode, 200)
 		body2, err := io.ReadAll(resp2.Body)
 		require.Nil(t, err)
+		t.Logf("%s", body2)
 		require.Equal(t, "", string(body2))
+		require.Equal(t, resp2.StatusCode, 200)
 	}
 
 	t.Run("upload a file", func(t *testing.T) {
 		uploadFile(t, "testdevice", "rosbag.db3", "hello world")
-		validateFile(t, "testdevice", "rosbag.db3", "hello world")
+		validateFile(t, "test-tenant", "testdevice", "rosbag.db3", "hello world")
 		uploadFile(t, "testdevice", "", "another file")
 		uploadFile(t, "/../device", "../.../.", "file with\nnewline")
 
 		// Check that the files haven't been overwritten
-		validateFile(t, "testdevice", "rosbag.db3", "hello world")
-		validateFile(t, "testdevice", generateBagName(), "another file")
-		validateFile(t, "___device", "___._.", "file with\nnewline")
+		validateFile(t, "test-tenant", "testdevice", "rosbag.db3", "hello world")
+		validateFile(t, "test-tenant", "testdevice", generateBagName(), "another file")
+		validateFile(t, "test-tenant", "___device", "___._.", "file with\nnewline")
 	})
 }

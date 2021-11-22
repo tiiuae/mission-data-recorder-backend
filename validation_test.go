@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"path"
 	"testing"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/api/cloudiot/v1"
 )
@@ -172,50 +173,50 @@ nbECIQCWeaUHLBAKxiRXiqfk+JNZvFrkKdFQFk77/x3ADrAjfw==
 }
 
 type gcpConfigTest struct {
-	projectID     string
 	rawPrivateKey []byte
 	privateKey    interface{}
 	credentials   map[string][]*cloudiot.DeviceCredential
 }
 
-func (c *gcpConfigTest) GetProjectID() string {
-	return c.projectID
-}
-
-func (c *gcpConfigTest) GetDeviceCredentials(ctx context.Context, deviceID string) ([]*cloudiot.DeviceCredential, error) {
-	creds, ok := c.credentials[deviceID]
+func (c *gcpConfigTest) GetDeviceCredentials(ctx context.Context, tenantID, deviceID string) ([]*cloudiot.DeviceCredential, error) {
+	creds, ok := c.credentials[path.Join(tenantID, deviceID)]
 	if ok {
 		return creds, nil
 	}
 	return nil, errors.New("unknown device: " + deviceID)
 }
 
-func (c *gcpConfigTest) newTestToken(id, name string, expires *time.Time) string {
+func (c *gcpConfigTest) newTestToken(id, tenant, name string, expires *time.Time) string {
 	signingMethod := jwt.GetSigningMethod("RS256")
+	if tenant == "" {
+		tenant = "test-tenant"
+	}
 	if expires == nil {
 		t := timeNow().Add(time.Second)
 		expires = &t
 	}
 	type noBagNameClaims struct {
-		jwt.StandardClaims
+		jwt.RegisteredClaims
+		TenantID string
 		DeviceID string
 	}
-	standardClaims := jwt.StandardClaims{
-		Audience:  c.projectID,
-		ExpiresAt: expires.Unix(),
-		IssuedAt:  timeNow().Add(-time.Minute).Unix(),
+	registeredClaims := jwt.RegisteredClaims{
+		ExpiresAt: jwt.NewNumericDate(*expires),
+		IssuedAt:  jwt.NewNumericDate(timeNow().Add(-time.Minute)),
 	}
 	var claims jwt.Claims
 	if name == "" {
 		claims = &noBagNameClaims{
-			DeviceID:       id,
-			StandardClaims: standardClaims,
+			TenantID:         tenant,
+			DeviceID:         id,
+			RegisteredClaims: registeredClaims,
 		}
 	} else {
 		claims = &jwtClaims{
-			DeviceID:       id,
-			BagName:        name,
-			StandardClaims: standardClaims,
+			TenantID:         tenant,
+			DeviceID:         id,
+			BagName:          name,
+			RegisteredClaims: registeredClaims,
 		}
 	}
 	token := jwt.NewWithClaims(signingMethod, claims)
@@ -302,11 +303,10 @@ oPCV0e7ZhaMkq7vmQC+R4Cry0LLhL2y5Erx8r/MqCy09tONbc6FFzO535tCjF++k
 v1aXtd+Hg5fu=
 -----END CERTIFICATE-----`
 	return &gcpConfigTest{
-		projectID:     "test-project",
 		privateKey:    privateKey,
 		rawPrivateKey: rawPrivateKey,
 		credentials: map[string][]*cloudiot.DeviceCredential{
-			"existing": {
+			"test-tenant/existing": {
 				{
 					ExpirationTime: time.Unix(0, 0).Format(time.RFC3339),
 					PublicKey: &cloudiot.PublicKeyCredential{
@@ -315,7 +315,7 @@ v1aXtd+Hg5fu=
 					},
 				},
 			},
-			"another existing": {
+			"test-tenant/another existing": {
 				{
 					ExpirationTime: time.Unix(0, 0).Format(time.RFC3339),
 					PublicKey: &cloudiot.PublicKeyCredential{
@@ -331,12 +331,12 @@ v1aXtd+Hg5fu=
 func TestValidateJWT(t *testing.T) {
 	gcp := testGCP()
 	newToken := func(id string, expires *time.Time) string {
-		return gcp.newTestToken(id, "testbag.db3", expires)
+		return gcp.newTestToken(id, "", "testbag.db3", expires)
 	}
 	bg := context.Background()
 
 	t.Run("valid token", func(t *testing.T) {
-		claims, err := validateJWT(bg, gcp, newToken("existing", nil))
+		claims, err := validateJWT(bg, gcp, "test-tenant", newToken("existing", nil))
 		assert.NoError(t, err)
 		assert.Equal(t, claims.DeviceID, "existing")
 		assert.Equal(t, claims.BagName, "testbag.db3")
@@ -344,32 +344,32 @@ func TestValidateJWT(t *testing.T) {
 	t.Run("invalid token", func(t *testing.T) {
 		token := []byte(newToken("existing", nil))
 		token[3] = 2
-		claims, err := validateJWT(bg, gcp, string(token))
+		claims, err := validateJWT(bg, gcp, "test-tenant", string(token))
 		assert.Error(t, err)
 		assert.Nil(t, claims)
 	})
 	t.Run("nonexistent device", func(t *testing.T) {
-		claims, err := validateJWT(bg, gcp, newToken("nonexistent", nil))
+		claims, err := validateJWT(bg, gcp, "test-tenant", newToken("nonexistent", nil))
 		assert.Error(t, err)
 		assert.Nil(t, claims)
 	})
 	t.Run("expired token", func(t *testing.T) {
 		expires := timeNow().Add(-time.Second)
-		claims, err := validateJWT(bg, gcp, newToken("existing", &expires))
+		claims, err := validateJWT(bg, gcp, "test-tenant", newToken("existing", &expires))
 		if assert.Error(t, err) {
 			assert.Contains(t, err.Error(), "expired")
 		}
 		assert.Nil(t, claims)
 	})
 	t.Run("no valid key", func(t *testing.T) {
-		claims, err := validateJWT(bg, gcp, newToken("another existing", nil))
+		claims, err := validateJWT(bg, gcp, "test-tenant", newToken("another existing", nil))
 		if assert.Error(t, err) {
 			assert.Contains(t, err.Error(), "unauthorized device")
 		}
 		assert.Nil(t, claims)
 	})
 	t.Run("empty bag name", func(t *testing.T) {
-		claims, err := validateJWT(bg, gcp, gcp.newTestToken("existing", "", nil))
+		claims, err := validateJWT(bg, gcp, "test-tenant", gcp.newTestToken("existing", "", "", nil))
 		assert.Nil(t, err)
 		assert.Equal(t, claims.DeviceID, "existing")
 		assert.Equal(t, claims.BagName, "")

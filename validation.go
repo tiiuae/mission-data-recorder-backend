@@ -7,7 +7,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v4"
 	"google.golang.org/api/cloudiot/v1"
 )
 
@@ -15,29 +15,24 @@ import (
 var timeNow = time.Now
 
 type gcpAPI interface {
-	GetProjectID() string
-	GetDeviceCredentials(ctx context.Context, deviceID string) ([]*cloudiot.DeviceCredential, error)
+	GetDeviceCredentials(ctx context.Context, tenantID, deviceID string) ([]*cloudiot.DeviceCredential, error)
 }
 
 type gcpConfig struct {
-	ProjectID  string `yaml:"projectId"`
-	Region     string `yaml:"region"`
-	RegistryID string `yaml:"registryId"`
+	ProjectID  string `config:"projectId"`
+	Region     string `config:"region"`
 	iotService *cloudiot.Service
-}
-
-func (g *gcpConfig) GetProjectID() string {
-	return g.ProjectID
 }
 
 func (g *gcpConfig) GetDeviceCredentials(
 	ctx context.Context,
+	tenantID string,
 	deviceID string,
 ) ([]*cloudiot.DeviceCredential, error) {
 	device, err := g.iotService.Projects.Locations.Registries.Devices.Get(
 		fmt.Sprintf(
 			"projects/%s/locations/%s/registries/%s/devices/%s",
-			g.ProjectID, g.Region, g.RegistryID, deviceID,
+			g.ProjectID, g.Region, tenantID, deviceID,
 		),
 	).Context(ctx).FieldMask("credentials").Do()
 	if err != nil {
@@ -96,11 +91,12 @@ func validateDeviceCredential(
 
 type jwtClaims struct {
 	DeviceID string `json:"deviceId"`
+	TenantID string `json:"tenantId"`
 	BagName  string `json:"bagName"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
-func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (*jwtClaims, error) {
+func validateJWT(ctx context.Context, gcp gcpAPI, defaulTenantID, rawToken string) (*jwtClaims, error) {
 	// Automatic validation makes unit testing harder so it is skipped and
 	// manual validation is used instead.
 	parser := jwt.Parser{SkipClaimsValidation: true}
@@ -109,17 +105,17 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (*jwtClaims, 
 		rawToken,
 		&claims,
 		func(t *jwt.Token) (interface{}, error) {
-			now := timeNow().Unix()
-			if !claims.VerifyAudience(gcp.GetProjectID(), true) {
-				return nil, invalidTokenErr{fmt.Errorf("invalid audience: %s", claims.Audience)}
+			if claims.TenantID == "" {
+				claims.TenantID = defaulTenantID
 			}
+			now := timeNow()
 			if !claims.VerifyExpiresAt(now, true) {
-				return nil, invalidTokenErr{fmt.Errorf("expired at %d", claims.ExpiresAt)}
+				return nil, invalidTokenErr{fmt.Errorf("expired at %v", claims.ExpiresAt)}
 			}
 			if !claims.VerifyIssuedAt(now, true) {
-				return nil, invalidTokenErr{fmt.Errorf("invalid issue date: %d", claims.IssuedAt)}
+				return nil, invalidTokenErr{fmt.Errorf("invalid issue date: %v", claims.IssuedAt)}
 			}
-			creds, err := gcp.GetDeviceCredentials(ctx, claims.DeviceID)
+			creds, err := gcp.GetDeviceCredentials(ctx, claims.TenantID, claims.DeviceID)
 			if err != nil {
 				return nil, invalidTokenErr{err}
 			}
@@ -127,14 +123,14 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (*jwtClaims, 
 				pubKey, err := validateDeviceCredential(cred, t.Method.Alg())
 				if err != nil {
 					log.Printf(
-						"a non-fatal error occurred when validating credential number %d for device '%s': %s",
-						i, claims.DeviceID, err.Error(),
+						"a non-fatal error occurred when validating credential number %d for device '%s/%s': %s",
+						i, claims.TenantID, claims.DeviceID, err.Error(),
 					)
 				} else if pubKey != nil {
 					return pubKey, nil
 				}
 			}
-			return nil, invalidTokenErr{errors.New("unauthorized device: " + claims.DeviceID)}
+			return nil, invalidTokenErr{fmt.Errorf("unauthorized device: %s/%s", claims.TenantID, claims.DeviceID)}
 		},
 	)
 	if !token.Valid {
@@ -144,9 +140,10 @@ func validateJWT(ctx context.Context, gcp gcpAPI, rawToken string) (*jwtClaims, 
 }
 
 func getClaimsWithoutValidation(rawToken string) (*jwtClaims, error) {
-	token, _, err := (&jwt.Parser{}).ParseUnverified(rawToken, &jwtClaims{})
+	var claims jwtClaims
+	_, _, err := (&jwt.Parser{}).ParseUnverified(rawToken, &claims)
 	if err != nil {
 		return nil, err
 	}
-	return token.Claims.(*jwtClaims), nil
+	return &claims, nil
 }

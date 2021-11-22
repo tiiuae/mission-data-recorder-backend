@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,16 +38,17 @@ type urlGenerator struct {
 	Prefix        string
 }
 
-func (g *urlGenerator) Generate(deviceID, name, method string) (string, error) {
+func (g *urlGenerator) Generate(tenantID, deviceID, name, method string) (string, error) {
 	if name == "" {
 		name = generateBagName()
 	}
-	name = g.Prefix + deviceID + "/" + name
+	name = path.Join(g.Prefix+tenantID, deviceID, name)
 	url, err := storage.SignedURL(g.Bucket, name, &storage.SignedURLOptions{
 		GoogleAccessID: g.Account,
 		PrivateKey:     g.SigningKey,
 		Method:         method,
 		Expires:        timeNow().Add(g.ValidDuration),
+		Scheme:         storage.SigningSchemeV2,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed URL: %w", err)
@@ -69,13 +71,16 @@ type configuration struct {
 	Host              string        `config:"host"`
 	DataObjectPrefix  string        `config:"dataObjectPrefix"`
 	DisableValidation bool          `config:"disableValidation"`
+	DefaultTenantID   string        `config:"defaultTenantID"`
 
 	privateKey      []byte
 	jsonCredentials []byte
 }
 
 func loadConfig() (config *configuration, err error) {
-	config = &configuration{}
+	config = &configuration{
+		DefaultTenantID: "fleet-registry",
+	}
 	loader := configloader.New()
 	loader.Args = os.Args
 	loader.EnvPrefix = "MISSION_DATA_RECORDER_BACKEND"
@@ -91,7 +96,7 @@ func loadConfig() (config *configuration, err error) {
 	if config.LocalDir == "" {
 		config.jsonCredentials, err = os.ReadFile(config.PrivateKeyFile)
 		if err != nil {
-			return nil, configErr(err)
+			return nil, configErr(fmt.Errorf("failed to read private key: %w", err))
 		}
 		keyConfig, err := google.JWTConfigFromJSON(config.jsonCredentials)
 		if err != nil {
@@ -109,7 +114,7 @@ func urlGeneratorFromConfig(config *configuration) *urlGenerator {
 	g := &urlGenerator{
 		Bucket:        config.Bucket,
 		Account:       config.Account,
-		SigningKey:    config.PrivateKey,
+		SigningKey:    config.privateKey,
 		ValidDuration: config.URLValidDuration,
 		Prefix:        strings.Trim(config.DataObjectPrefix, "/"),
 	}
@@ -132,7 +137,8 @@ func internalServerErr(rw http.ResponseWriter) {
 	writeErrMsg(rw, http.StatusInternalServerError, "something went wrong")
 }
 
-func signedURLGeneratorHandler(gen *urlGenerator, gcp gcpAPI, disableValidation bool) http.Handler {
+func signedURLGeneratorHandler(config *configuration, gcp gcpAPI) http.Handler {
+	gen := urlGeneratorFromConfig(config)
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rawToken := readAuthJWT(r)
 		if rawToken == "" {
@@ -143,17 +149,22 @@ func signedURLGeneratorHandler(gen *urlGenerator, gcp gcpAPI, disableValidation 
 			claims *jwtClaims
 			err    error
 		)
-		if disableValidation {
+		if config.DisableValidation {
 			claims, err = getClaimsWithoutValidation(rawToken)
 		} else {
-			claims, err = validateJWT(r.Context(), gcp, rawToken)
+			claims, err = validateJWT(r.Context(), gcp, config.DefaultTenantID, rawToken)
 		}
 		if err != nil {
 			log.Println(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
-		signedURL, err := gen.Generate(claims.DeviceID, claims.BagName, "PUT")
+		signedURL, err := gen.Generate(
+			claims.TenantID,
+			claims.DeviceID,
+			claims.BagName,
+			"PUT",
+		)
 		if err != nil {
 			log.Println(err)
 			internalServerErr(rw)
@@ -178,8 +189,9 @@ func localURLGeneratorHandler(host string) http.Handler {
 		}
 		writeJSON(rw, jsonObj{
 			"url": fmt.Sprintf(
-				"%s/upload?device=%s&bagName=%s",
+				"%s/upload?tenant=%s&device=%s&bagName=%s",
 				host,
+				url.QueryEscape(claims.TenantID),
 				url.QueryEscape(claims.DeviceID),
 				url.QueryEscape(claims.BagName),
 			),
@@ -189,14 +201,22 @@ func localURLGeneratorHandler(host string) http.Handler {
 
 var pathSegmentSanitizer = strings.NewReplacer("..", "_", "/", "_")
 
-func receiveUploadHandler(dirPath string) http.Handler {
+func receiveUploadHandler(dirPath, defaultTenantID string) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		tenant := r.URL.Query().Get("tenant")
+		if tenant == "" {
+			tenant = defaultTenantID
+		}
 		device := r.URL.Query().Get("device")
 		if device == "" {
 			writeErrMsg(rw, http.StatusBadRequest, "parameter 'device' is missing")
 			return
 		}
-		dir := filepath.Join(dirPath, pathSegmentSanitizer.Replace(device))
+		dir := filepath.Join(
+			dirPath,
+			pathSegmentSanitizer.Replace(tenant),
+			pathSegmentSanitizer.Replace(device),
+		)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Println(err)
 			internalServerErr(rw)
@@ -250,14 +270,13 @@ func run() int {
 			log.Println(err)
 			return 1
 		}
-		urlGenHandler = signedURLGeneratorHandler(
-			urlGeneratorFromConfig(config),
-			&config.GCP,
-			config.DisableValidation,
-		)
+		urlGenHandler = signedURLGeneratorHandler(config, &config.GCP)
 	} else {
 		urlGenHandler = localURLGeneratorHandler(config.Host)
-		r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(config.LocalDir))
+		r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(
+			config.LocalDir,
+			config.DefaultTenantID,
+		))
 	}
 	r.Path("/generate-url").Methods("POST").Handler(urlGenHandler)
 
