@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,12 +16,39 @@ import (
 
 	"cloud.google.com/go/storage"
 	"github.com/gorilla/mux"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/pflag"
 	"github.com/tiiuae/fleet-management/mission-data-recorder-backend/configloader"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudiot/v1"
 	"google.golang.org/api/option"
 )
+
+func fmtSprintln(a ...interface{}) string {
+	s := fmt.Sprintln(a...)
+	return s[:len(s)-1]
+}
+
+func logInfoln(a ...interface{}) {
+	log.Info().Msg(fmtSprintln(a...))
+}
+
+func logErrorln(a ...interface{}) {
+	log.Error().Msg(fmtSprintln(a...))
+}
+
+func logInfof(format string, a ...interface{}) {
+	log.Info().Msgf(format, a...)
+}
+
+func logWarnf(format string, a ...interface{}) {
+	log.Warn().Msgf(format, a...)
+}
+
+func logErrorf(format string, a ...interface{}) {
+	log.Error().Msgf(format, a...)
+}
 
 const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
@@ -72,6 +98,7 @@ type configuration struct {
 	DataObjectPrefix  string        `config:"dataObjectPrefix"`
 	DisableValidation bool          `config:"disableValidation"`
 	DefaultTenantID   string        `config:"defaultTenantID"`
+	Debug             bool          `config:"debug"`
 
 	privateKey      []byte
 	jsonCredentials []byte
@@ -91,7 +118,7 @@ func loadConfig() (config *configuration, err error) {
 		} else if errors.Is(err, pflag.ErrHelp) {
 			return nil, nil
 		}
-		log.Println("during config loading:", err)
+		logErrorln("during config loading:", err)
 	}
 	if config.LocalDir == "" {
 		config.jsonCredentials, err = os.ReadFile(config.PrivateKeyFile)
@@ -155,7 +182,7 @@ func signedURLGeneratorHandler(config *configuration, gcp gcpAPI) http.Handler {
 			claims, err = validateJWT(r.Context(), gcp, config.DefaultTenantID, rawToken)
 		}
 		if err != nil {
-			log.Println(err)
+			logErrorln(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -166,7 +193,7 @@ func signedURLGeneratorHandler(config *configuration, gcp gcpAPI) http.Handler {
 			"PUT",
 		)
 		if err != nil {
-			log.Println(err)
+			logErrorln(err)
 			internalServerErr(rw)
 			return
 		}
@@ -183,7 +210,7 @@ func localURLGeneratorHandler(host string) http.Handler {
 		}
 		claims, err := getClaimsWithoutValidation(rawToken)
 		if err != nil {
-			log.Println(err)
+			logErrorln(err)
 			writeErrMsg(rw, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -218,7 +245,7 @@ func receiveUploadHandler(dirPath, defaultTenantID string) http.Handler {
 			pathSegmentSanitizer.Replace(device),
 		)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Println(err)
+			logErrorln(err)
 			internalServerErr(rw)
 			return
 		}
@@ -228,13 +255,13 @@ func receiveUploadHandler(dirPath, defaultTenantID string) http.Handler {
 		}
 		f, err := os.Create(filepath.Join(dir, bagName))
 		if err != nil {
-			log.Println(err)
+			logErrorln(err)
 			internalServerErr(rw)
 			return
 		}
 		defer f.Close()
 		if _, err := io.Copy(f, r.Body); err != nil {
-			log.Println(err)
+			logErrorln(err)
 			writeErrMsg(rw, http.StatusBadRequest, "failed to store the file")
 			return
 		}
@@ -249,8 +276,11 @@ func healthCheck(rw http.ResponseWriter, r *http.Request) {
 func run() int {
 	config, err := loadConfig()
 	if err != nil {
-		log.Println(err)
+		logErrorln(err)
 		return 1
+	}
+	if config.Debug {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	}
 
 	r := mux.NewRouter()
@@ -267,7 +297,7 @@ func run() int {
 			option.WithCredentialsJSON(config.jsonCredentials),
 		)
 		if err != nil {
-			log.Println(err)
+			logErrorln(err)
 			return 1
 		}
 		urlGenHandler = signedURLGeneratorHandler(config, &config.GCP)
@@ -280,7 +310,7 @@ func run() int {
 	}
 	r.Path("/generate-url").Methods("POST").Handler(urlGenHandler)
 
-	log.Println("listening on port", config.Port)
+	logInfoln("listening on port", config.Port)
 	http.ListenAndServe(":"+strconv.Itoa(config.Port), r)
 	return 0
 }

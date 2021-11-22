@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -122,7 +121,7 @@ func validateJWT(ctx context.Context, gcp gcpAPI, defaulTenantID, rawToken strin
 			for i, cred := range creds {
 				pubKey, err := validateDeviceCredential(cred, t.Method.Alg())
 				if err != nil {
-					log.Printf(
+					logWarnf(
 						"a non-fatal error occurred when validating credential number %d for device '%s/%s': %s",
 						i, claims.TenantID, claims.DeviceID, err.Error(),
 					)

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"runtime/debug"
 )
@@ -11,7 +10,7 @@ type jsonObj map[string]interface{}
 
 func writeJSON(rw http.ResponseWriter, val interface{}) {
 	if err := json.NewEncoder(rw).Encode(val); err != nil {
-		log.Println("failed to write response:", err)
+		logInfoln("failed to write response:", err)
 	}
 }
 
@@ -48,7 +47,7 @@ func requestLoggerMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		logrw := newLoggerResponseWriter(rw)
 		next.ServeHTTP(logrw, r)
-		log.Printf("%s %s %d %s", r.Proto, r.Method, logrw.code, r.URL.String())
+		logInfof("%s %s %d %s", r.Proto, r.Method, logrw.code, r.URL.String())
 	})
 }
 
@@ -56,7 +55,7 @@ func recoverPanicMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(wr http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("panic occurred: %v, stacktrace: %s", r, string(debug.Stack()))
+				logErrorf("panic occurred: %v, stacktrace: %s", r, string(debug.Stack()))
 				writeErrMsg(
 					wr,
 					http.StatusInternalServerError,
