@@ -19,7 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/pflag"
-	"github.com/tiiuae/fleet-management/mission-data-recorder-backend/configloader"
+	"github.com/tiiuae/go-configloader"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/cloudiot/v1"
 	"google.golang.org/api/option"
