@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -74,14 +75,18 @@ func TestLocalUploading(t *testing.T) {
 	r.Path("/upload").Methods("PUT").Handler(receiveUploadHandler(dir, "fleet-registry"))
 
 	validateFile := func(t *testing.T, tenant, device, bagName, data string) {
+		t.Helper()
 		fileData, err := os.ReadFile(filepath.Join(dir, tenant, device, bagName))
 		require.Nil(t, err)
 		require.Equal(t, data, string(fileData))
 	}
 
 	uploadFile := func(t *testing.T, device, bagName, data string) {
+		t.Helper()
 		token := gcp.newTestToken(device, "test-tenant", bagName, nil)
-		req, err := http.NewRequest("POST", server.URL+"/generate-url", nil)
+		req, err := http.NewRequestWithContext(
+			context.Background(), "POST", server.URL+"/generate-url", nil,
+		)
 		require.Nil(t, err)
 		req.Header.Add("Authorization", "Bearer "+token)
 		resp, err := http.DefaultClient.Do(req)
@@ -94,7 +99,9 @@ func TestLocalUploading(t *testing.T) {
 		require.Nil(t, json.Unmarshal(body, &url))
 
 		bagData := strings.NewReader(data)
-		req2, err := http.NewRequest("PUT", url.URL, bagData)
+		req2, err := http.NewRequestWithContext(
+			context.Background(), "PUT", url.URL, bagData,
+		)
 		t.Log(err)
 		require.Nil(t, err)
 		t.Log(url.URL)

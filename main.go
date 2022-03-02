@@ -244,6 +244,7 @@ func receiveUploadHandler(dirPath, defaultTenantID string) http.Handler {
 			pathSegmentSanitizer.Replace(tenant),
 			pathSegmentSanitizer.Replace(device),
 		)
+		//#nosec G301
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			logErrorln(err)
 			internalServerErr(rw)
@@ -311,7 +312,7 @@ func run() int {
 	r.Path("/generate-url").Methods("POST").Handler(urlGenHandler)
 
 	logInfoln("listening on port", config.Port)
-	http.ListenAndServe(":"+strconv.Itoa(config.Port), r)
+	_ = http.ListenAndServe(":"+strconv.Itoa(config.Port), r)
 	return 0
 }
 
