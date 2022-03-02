@@ -40,11 +40,11 @@ func (g *gcpConfig) GetDeviceCredentials(
 	return device.Credentials, nil
 }
 
-type invalidTokenErr struct {
+type invalidTokenError struct {
 	Err error
 }
 
-func (err invalidTokenErr) Error() string {
+func (err invalidTokenError) Error() string {
 	if err.Err == nil {
 		return "invalid token"
 	}
@@ -109,14 +109,14 @@ func validateJWT(ctx context.Context, gcp gcpAPI, defaulTenantID, rawToken strin
 			}
 			now := timeNow()
 			if !claims.VerifyExpiresAt(now, true) {
-				return nil, invalidTokenErr{fmt.Errorf("expired at %v", claims.ExpiresAt)}
+				return nil, invalidTokenError{fmt.Errorf("expired at %v", claims.ExpiresAt)}
 			}
 			if !claims.VerifyIssuedAt(now, true) {
-				return nil, invalidTokenErr{fmt.Errorf("invalid issue date: %v", claims.IssuedAt)}
+				return nil, invalidTokenError{fmt.Errorf("invalid issue date: %v", claims.IssuedAt)}
 			}
 			creds, err := gcp.GetDeviceCredentials(ctx, claims.TenantID, claims.DeviceID)
 			if err != nil {
-				return nil, invalidTokenErr{err}
+				return nil, invalidTokenError{err}
 			}
 			for i, cred := range creds {
 				pubKey, err := validateDeviceCredential(cred, t.Method.Alg())
@@ -129,7 +129,7 @@ func validateJWT(ctx context.Context, gcp gcpAPI, defaulTenantID, rawToken strin
 					return pubKey, nil
 				}
 			}
-			return nil, invalidTokenErr{fmt.Errorf("unauthorized device: %s/%s", claims.TenantID, claims.DeviceID)}
+			return nil, invalidTokenError{fmt.Errorf("unauthorized device: %s/%s", claims.TenantID, claims.DeviceID)}
 		},
 	)
 	if !token.Valid {
