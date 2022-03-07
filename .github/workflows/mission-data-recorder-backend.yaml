@@ -40,7 +40,8 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=sha
-            latest
+            type=raw,value=latest,enable=${{ endsWith(github.ref, github.event.repository.default_branch) }}
+            type=raw,value={{branch}}-{{sha}}-{{date 'x'}},enable=${{ github.ref_type == 'branch' }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v1
