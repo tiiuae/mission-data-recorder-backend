@@ -2,7 +2,7 @@
 
 ### [1.1.2](https://github.com/tiiuae/mission-data-recorder-backend/compare/v1.1.1...v1.1.2) (2022-03-07)
 
-* Add CHANGELOG.md ([8a2a43d](https://github.com/tiiuae/sacplatform-web/commits/8a2a43da7ce0e7dc6ef638219ace9e8025b192f3))
+* Add CHANGELOG.md ([0cc0e0e](https://github.com/tiiuae/mission-data-recorder-backend/commits/0cc0e0e5627f11f3210648a54d998288a4c3593c))
 
 ## 1.1.1 (2022-01-26)
 
