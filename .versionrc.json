@@ -1,0 +1,39 @@
+{
+    "header": "# Changelog\n",
+    "types": [
+        {
+            "type": "feat",
+            "section": "Features"
+        },
+        {
+            "type": "fix",
+            "section": "Bug fixes"
+        },
+        {
+            "type": "chore",
+            "hidden": true
+        },
+        {
+            "type": "docs",
+            "hidden": true
+        },
+        {
+            "type": "style",
+            "hidden": true
+        },
+        {
+            "type": "refactor",
+            "section": "Other changes"
+        },
+        {
+            "type": "perf",
+            "section": "Other changes"
+        },
+        {
+            "type": "test",
+            "hidden": true
+        }
+    ],
+    "commitUrlFormat": "https://github.com/tiiuae/sacplatform-web/commits/{{hash}}",
+    "compareUrlFormat": "https://github.com/tiiuae/sacplatform-web/compare/{{previousTag}}...{{currentTag}}"
+}
